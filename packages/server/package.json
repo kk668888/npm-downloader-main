@@ -1,0 +1,44 @@
+{
+    "name": "@npm-downloader/server",
+    "version": "1.0.0",
+    "type": "module",
+    "main": "index.js",
+    "scripts": {
+        "prepare:workspace": "pnpm -C ../types build && pnpm -C ../core build",
+        "predev": "pnpm run prepare:workspace",
+        "dev": "tsx watch src/app.ts",
+        "prebuild": "pnpm run prepare:workspace",
+        "build": "tsc",
+        "prestart": "pnpm run prepare:workspace",
+        "start": "node dist/app.js",
+        "test": "vitest run",
+        "clean": "rm -rf dist"
+    },
+    "dependencies": {
+        "@npm-downloader/core": "workspace:*",
+        "@npm-downloader/types": "workspace:*",
+        "archiver": "^7.0.1",
+        "cors": "^2.8.5",
+        "dotenv": "^17.2.3",
+        "express": "^5.2.1",
+        "form-data": "^4.0.5",
+        "multer": "^2.0.2",
+        "p-limit": "^7.1.1",
+        "pacote": "^21.0.4",
+        "reflect-metadata": "^0.1.13",
+        "routing-controllers": "^0.10.0",
+        "semver": "^7.8.0"
+    },
+    "devDependencies": {
+        "@types/archiver": "^7.0.0",
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.6",
+        "@types/form-data": "^2.5.2",
+        "@types/multer": "^2.0.0",
+        "@types/pacote": "^11.1.8",
+        "@types/semver": "^7.7.1",
+        "tsx": "^4.20.5",
+        "typescript": "^5.9.2",
+        "vitest": "^4.0.16"
+    }
+}

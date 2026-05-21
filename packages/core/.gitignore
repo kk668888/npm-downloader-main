@@ -1,0 +1,19 @@
+# Dependencies
+node_modules
+pnpm-lock.yaml
+
+# Build output
+dist
+
+# Test coverage
+coverage
+*.lcov
+
+# Temporary files
+*.log
+*.tmp
+downloadTgz
+
+# OS files
+.DS_Store
+Thumbs.db

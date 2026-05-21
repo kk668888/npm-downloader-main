@@ -1,0 +1,20 @@
+{
+    "name": "npm-downloader-monorepo",
+    "private": true,
+    "packageManager": "pnpm@10.13.1",
+    "scripts": {
+        "build": "turbo run build",
+        "test": "turbo run test",
+        "clean": "turbo run clean",
+        "dev": "turbo run dev"
+    },
+    "devDependencies": {
+        "tslib": "^2.8.1",
+        "turbo": "^2",
+        "typescript": "^5.9.2"
+    },
+    "dependencies": {
+        "@fontsource-variable/dm-sans": "^5.2.8",
+        "@fontsource-variable/jetbrains-mono": "^5.2.8"
+    }
+}

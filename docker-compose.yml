@@ -1,0 +1,17 @@
+services:
+  npm-downloader:
+    build: .
+    container_name: npm-downloader
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    volumes:
+      - ./downloads:/app/downloads
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    environment:
+      - NODE_ENV=production
+      - TEMP_DIR=/app/downloads
+      - DATA_DIR=/app/data
+      - UPLOAD_DIR=/app/uploads
+    restart: unless-stopped

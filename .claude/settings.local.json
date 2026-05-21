@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm -C packages/server run build)",
+      "Bash(pnpm -C packages/server run test)",
+      "Bash(pnpm -C packages/server run test -- --reporter=verbose)",
+      "Bash(npx tsx *)",
+      "Bash(curl -s http://localhost:3002/health)",
+      "Bash(kill %1)",
+      "Bash(node -e ' *)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(curl -s -X POST http://localhost:3002/api/task/nonexistent/confirm-audit -H 'Content-Type: application/json' -d '{\\\\\"token\\\\\": \\\\\"fake\\\\\"}')",
+      "Bash(echo \"DONE: $?\")",
+      "Bash(cat /tmp/resp.txt)",
+      "Bash(cat /tmp/err.txt)",
+      "Read(//tmp/**)",
+      "Read(//c/tmp/**)",
+      "Bash(cat err_out.txt)",
+      "Bash(cat resp_out.txt)",
+      "Bash(npx vitest *)"
+    ]
+  }
+}

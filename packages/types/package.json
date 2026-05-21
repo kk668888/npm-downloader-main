@@ -1,0 +1,22 @@
+{
+    "name": "@npm-downloader/types",
+    "version": "1.0.0",
+    "description": "Shared TypeScript type definitions for npm-downloader",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "clean": "rm -rf dist"
+    },
+    "keywords": [
+        "types",
+        "typescript",
+        "npm-downloader"
+    ],
+    "author": "",
+    "license": "MIT",
+    "devDependencies": {
+        "typescript": "^5.9.2"
+    }
+}

@@ -1,0 +1,12 @@
+node_modules
+.git
+.gitignore
+*.log
+.DS_Store
+packages/*/node_modules
+packages/*/.output
+packages/*/dist
+packages/*/.nuxt
+temp
+uploads
+downloadTgz
