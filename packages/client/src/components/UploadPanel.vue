@@ -34,6 +34,16 @@
       </div>
     </div>
 
+    <!-- 自定义文件夹名称输入框（可选） -->
+    <Input
+      :model-value="folderName"
+      :disabled="busy"
+      placeholder="自定义文件夹名称（可选）"
+      icon="i-heroicons-folder"
+      size="md"
+      @update:model-value="$emit('update:folderName', $event)"
+    />
+
     <!-- Upload Button -->
     <Button
       block
@@ -50,6 +60,7 @@
 <script setup lang="ts">
 import Button from './ui/Button.vue';
 import Icon from './ui/Icon.vue';
+import Input from './ui/Input.vue';
 
 const props = defineProps<{
   selectedFile: File | null;
@@ -59,12 +70,16 @@ const props = defineProps<{
   taskId: string | null;
   progress: { current: number; total: number } | null;
   downloadUrl: string;
+  /** 用户自定义的文件夹名称（双向绑定，可选） */
+  folderName: string;
 }>();
 
 const emit = defineEmits<{
   (e: "selectFile", file: File): void;
   (e: "upload"): void;
   (e: "viewLogs", taskId: string): void;
+  /** 文件夹名称变更时向上传递 */
+  (e: "update:folderName", value: string): void;
 }>();
 
 const isDragging = ref(false);

@@ -18,11 +18,12 @@ import {
 } from './controllers/logController.js'
 import { AuditController } from './controllers/auditController.js'
 import { errorHandler } from './middleware/errorHandler.js'
-import { loadHistory } from './services/history.js'
+import { loadHistory, findHistoryItem } from './services/history.js'
 import {
   getTaskStatus,
   confirmAudit,
-  validateTaskToken
+  validateTaskToken,
+  cancelTask
 } from './services/taskStatus.js'
 import type { TaskStatusInfo } from '@npm-downloader/types'
 
@@ -95,6 +96,29 @@ baseApp.post(
   }
 )
 
+// 任务取消端点：使用原生 Express 路由，需要 token 验证确保安全性
+baseApp.post(
+  '/api/task/:taskId/cancel',
+  express.json(),
+  (req: Request, res: Response) => {
+    const { taskId } = req.params
+    const token = req.body?.token as string | undefined
+
+    // 验证任务令牌，防止恶意取消他人任务
+    if (!token || !validateTaskToken(taskId, token)) {
+      res.status(403).json({ ok: false, message: '无效的任务令牌' })
+      return
+    }
+
+    const cancelled = cancelTask(taskId)
+    if (!cancelled) {
+      res.status(404).json({ ok: false, message: '任务不存在或已完成' })
+      return
+    }
+    res.json({ ok: true })
+  }
+)
+
 const app = createExpressServer({
   cors: false,
   routePrefix: '/api',
@@ -115,6 +139,8 @@ baseApp.use(app)
 const expressApp = baseApp
 
 // 下载端点
+// ZIP 文件在磁盘上以 taskId 命名（避免特殊字符问题）
+// 用户下载时的文件名优先使用 folderName，否则回退到 taskId
 expressApp.get(
   '/api/download/:taskId',
   (req: Request, res: Response) => {
@@ -122,7 +148,13 @@ expressApp.get(
     const zipPath = path.join(TEMP_DIR, `${taskId}.zip`)
 
     if (fs.existsSync(zipPath)) {
-      res.download(zipPath, (err) => {
+      // 从历史记录中查找 folderName，用于设置下载文件名
+      const historyItem = findHistoryItem(taskId)
+      const downloadName = historyItem?.folderName
+        ? `${historyItem.folderName}.zip`
+        : `${taskId}.zip`
+
+      res.download(zipPath, downloadName, (err) => {
         if (err) {
           console.error('Download error:', err)
           if (!res.headersSent) {

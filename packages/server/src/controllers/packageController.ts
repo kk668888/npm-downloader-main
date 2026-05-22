@@ -6,7 +6,7 @@ import pLimit from "p-limit";
 import pacote from "pacote";
 import { upsertHistoryItem } from "../services/history.js";
 import { TEMP_DIR } from "../middleware/dirs.js";
-import { setTaskStatus, waitForAuditConfirmation, clearAuditConfirmation, getTaskStatus } from "../services/taskStatus.js";
+import { setTaskStatus, waitForAuditConfirmation, clearAuditConfirmation, getTaskStatus, createTaskAbortController, isTaskCancelled, removeTaskAbortController } from "../services/taskStatus.js";
 import { auditPackages } from "../services/auditService.js";
 import { addTaskLog } from "../services/taskLogger.js";
 import { retryWithBackoff } from "../utils/retry.js";
@@ -17,7 +17,7 @@ import crypto from "crypto";
 @JsonController()
 export class PackageController {
   @Post("/download-package")
-  async downloadPackage(@Body() body: { packageName?: string }, @Res() res: Response) {
+  async downloadPackage(@Body() body: { packageName?: string; folderName?: string }, @Res() res: Response) {
     try {
       const packageName = body.packageName;
       if (!packageName) {
@@ -25,14 +25,19 @@ export class PackageController {
       }
 
       const taskId = crypto.randomUUID();
+
+      // 获取用户自定义的文件夹名称（可选）
+      const folderName = body.folderName || undefined;
+
       upsertHistoryItem(taskId, {
         type: "package",
         status: "pending",
         message: "Initializing...",
         packageName,
         zipUrl: `/api/download/${taskId}`,
+        folderName,
       });
-      setTaskStatus(taskId, "pending", "Initializing...");
+      setTaskStatus(taskId, "pending", "Initializing...", undefined, undefined, folderName);
 
       const taskDir = path.join(TEMP_DIR, taskId);
       fs.mkdirSync(taskDir, { recursive: true });
@@ -62,6 +67,8 @@ export class PackageController {
       };
 
       const downloadAll = async () => {
+        // 创建 AbortController，用于支持任务取消
+        createTaskAbortController(taskId);
         try {
           setTaskStatus(taskId, "processing", "Resolving dependencies...");
           addTaskLog(
@@ -168,6 +175,11 @@ export class PackageController {
             ([key, resolvedVersion]) => {
               const pkgName = key.substring(0, key.lastIndexOf("@"));
               return limit(async () => {
+                // 每个包下载前检查任务是否已被取消
+                if (isTaskCancelled(taskId)) {
+                  return;
+                }
+
                 const spec = `${pkgName}@${resolvedVersion}`;
                 const fileName = pkgName.startsWith("@")
                   ? `${pkgName
@@ -214,6 +226,22 @@ export class PackageController {
           );
 
           await Promise.all(downloadPromises);
+
+          // 下载完成后检查任务是否已被取消，如果取消则清理临时文件
+          if (isTaskCancelled(taskId)) {
+            // 清理临时下载目录
+            if (fs.existsSync(taskDir)) {
+              fs.rmSync(taskDir, { recursive: true, force: true });
+            }
+            // 清理可能已生成的 ZIP 文件
+            const zipPath = path.join(TEMP_DIR, `${taskId}.zip`);
+            if (fs.existsSync(zipPath)) {
+              fs.unlinkSync(zipPath);
+            }
+            addTaskLog(taskId, "info", "任务已被用户取消");
+            return;
+          }
+
           addTaskLog(
             taskId,
             "info",
@@ -231,6 +259,9 @@ export class PackageController {
         } catch (e) {
           console.error("Download package failed", e);
           setTaskStatus(taskId, "failed", "Download failed");
+        } finally {
+          // 任务结束（无论成功、失败还是取消）都清理 AbortController，释放内存
+          removeTaskAbortController(taskId);
         }
       };
 

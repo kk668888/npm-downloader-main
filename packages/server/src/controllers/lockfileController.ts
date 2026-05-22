@@ -14,7 +14,7 @@ import {
 import type { SkippedDep } from "@npm-downloader/types";
 import { upsertHistoryItem } from "../services/history.js";
 import { TEMP_DIR } from "../middleware/dirs.js";
-import { setTaskStatus, waitForAuditConfirmation, clearAuditConfirmation, getTaskStatus } from "../services/taskStatus.js";
+import { setTaskStatus, waitForAuditConfirmation, clearAuditConfirmation, getTaskStatus, createTaskAbortController, isTaskCancelled, removeTaskAbortController } from "../services/taskStatus.js";
 import { auditPackages } from "../services/auditService.js";
 import { uploadSingleLockfile } from "../middleware/upload.js";
 import { addTaskLog } from "../services/taskLogger.js";
@@ -78,21 +78,26 @@ export class LockfileController {
         );
       }
 
-      // 初始化任务状态（会自动生成 token）
-      setTaskStatus(taskId, "pending", "准备中...");
+      // 从 FormData 中获取用户自定义的文件夹名称（multer 处理后 req.body 才有值）
+      const folderName = (req.body?.folderName as string) || undefined;
+
+      // 初始化任务状态（会自动生成 token，同时保存 folderName）
+      setTaskStatus(taskId, "pending", "准备中...", undefined, undefined, folderName);
+
       upsertHistoryItem(taskId, {
         type: "lockfile",
         status: "pending",
         message: "准备中...",
         packagesCount: packages.length,
         zipUrl: `/api/download/${taskId}`,
+        folderName,
       });
 
       // 获取初始化时生成的 token，随响应返回给前端
       const taskStatusItem = getTaskStatus(taskId);
 
       // Fire-and-forget：立即返回 taskId + token，后台执行审计+下载
-      processAll(taskId, packages, skipped).catch((err) => {
+      processAll(taskId, packages, skipped, folderName).catch((err) => {
         console.error("Lockfile processing failed:", err);
       });
 
@@ -120,12 +125,21 @@ export class LockfileController {
 
 /**
  * 后台执行完整流程：审计 → 等待确认 → 下载 → 打包
+ *
+ * @param taskId 任务 ID
+ * @param packages 解析到的包列表
+ * @param skippedDeps 被跳过的非 registry 依赖
+ * @param folderName 用户自定义的文件夹名称（可选，用于 ZIP 下载文件名）
  */
 async function processAll(
   taskId: string,
   packages: PackageInfo[],
-  skippedDeps: SkippedDep[]
+  skippedDeps: SkippedDep[],
+  folderName?: string
 ): Promise<void> {
+  // 创建 AbortController，用于支持任务取消
+  createTaskAbortController(taskId);
+
   try {
     // ===== 安全审计阶段 =====
     setTaskStatus(taskId, "auditing", "正在审计包安全性...");
@@ -207,6 +221,11 @@ async function processAll(
 
     const downloadPromises = packages.map((pkg: PackageInfo) => {
       return limit(async () => {
+        // 每个包下载前检查任务是否已被取消
+        if (isTaskCancelled(taskId)) {
+          return;
+        }
+
         const urlInfo: PackageUrlInfo = {
           ...pkg,
           url: parsePackageTgzUrl(pkg),
@@ -250,6 +269,22 @@ async function processAll(
     });
 
     await Promise.all(downloadPromises);
+
+    // 下载完成后检查任务是否已被取消，如果取消则清理临时文件
+    if (isTaskCancelled(taskId)) {
+      // 清理临时下载目录
+      if (fs.existsSync(taskDir)) {
+        fs.rmSync(taskDir, { recursive: true, force: true });
+      }
+      // 清理可能已生成的 ZIP 文件
+      const zipPath = path.join(TEMP_DIR, `${taskId}.zip`);
+      if (fs.existsSync(zipPath)) {
+        fs.unlinkSync(zipPath);
+      }
+      addTaskLog(taskId, "info", "任务已被用户取消");
+      return;
+    }
+
     addTaskLog(
       taskId,
       "info",
@@ -268,5 +303,8 @@ async function processAll(
     const errMsg = error instanceof Error ? error.message : "Unknown error";
     addTaskLog(taskId, "error", `Task failed: ${errMsg}`);
     setTaskStatus(taskId, "failed", "Internal server error");
+  } finally {
+    // 任务结束（无论成功、失败还是取消）都清理 AbortController，释放内存
+    removeTaskAbortController(taskId);
   }
 }

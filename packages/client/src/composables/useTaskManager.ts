@@ -18,6 +18,9 @@ export function useTaskManager(serverBaseUrl: string) {
   const packageStatusMessage = ref("");
   const packageProgress = ref<TaskProgress | null>(null);
 
+  // 用户自定义文件夹名称（可选，为空时后端使用 taskId）
+  const folderName = ref("");
+
   // 审计相关状态
   const auditReport = ref<AuditReport | null>(null);
   const showingAuditReport = ref(false);
@@ -173,6 +176,10 @@ export function useTaskManager(serverBaseUrl: string) {
     taskProgress.value = null;
     const formData = new FormData();
     formData.append("lockfile", file.value);
+    // 如果用户填写了自定义文件夹名称，附加到 FormData
+    if (folderName.value.trim()) {
+      formData.append("folderName", folderName.value.trim());
+    }
 
     try {
       const response = await fetch(`${serverBaseUrl}/api/upload`, {
@@ -209,13 +216,18 @@ export function useTaskManager(serverBaseUrl: string) {
 
           if (
             statusData.status === "completed" ||
-            statusData.status === "failed"
+            statusData.status === "failed" ||
+            statusData.status === "cancelled"
           ) {
             uploading.value = false;
             activePollFn = null;
             isAwaitingAudit.value = false;
             auditAutoShownForTask = null;
             auditConfirmedForTask = null;
+            // cancelled 状态需要额外清理进度显示
+            if (statusData.status === "cancelled") {
+              taskProgress.value = null;
+            }
             onComplete?.();
           } else {
             setTimeout(poll, 1000);
@@ -254,7 +266,11 @@ export function useTaskManager(serverBaseUrl: string) {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ packageName: packageName.value }),
+        body: JSON.stringify({
+          packageName: packageName.value,
+          // 如果用户填写了自定义文件夹名称，一并传递
+          ...(folderName.value.trim() ? { folderName: folderName.value.trim() } : {}),
+        }),
       });
       const data = await response.json();
       packageTaskId.value = data.taskId;
@@ -298,6 +314,15 @@ export function useTaskManager(serverBaseUrl: string) {
             auditAutoShownForTask = null;
             auditConfirmedForTask = null;
             onError?.(new Error(statusData.message || "未知错误"));
+          } else if (statusData.status === "cancelled") {
+            // 任务已被用户取消，清理所有状态
+            downloadingPackage.value = false;
+            packageProgress.value = null;
+            activePollFn = null;
+            isAwaitingAudit.value = false;
+            auditAutoShownForTask = null;
+            auditConfirmedForTask = null;
+            onComplete?.();
           } else {
             setTimeout(poll, 1000);
           }
@@ -319,6 +344,30 @@ export function useTaskManager(serverBaseUrl: string) {
     }
   };
 
+  /**
+   * 取消指定的下载任务
+   * 调用后端 POST /api/task/:taskId/cancel 接口
+   * 需要携带该任务对应的 token 进行身份校验
+   *
+   * @param tid - 要取消的任务 ID
+   * @returns 是否取消成功
+   */
+  const cancelTask = async (tid: string): Promise<boolean> => {
+    const token = tokenStore.get(tid);
+    if (!token) return false;
+    try {
+      const response = await fetch(`${serverBaseUrl}/api/task/${tid}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      const data = await response.json();
+      return response.ok && data.ok === true;
+    } catch {
+      return false;
+    }
+  };
+
   return {
     // State
     uploading,
@@ -331,6 +380,7 @@ export function useTaskManager(serverBaseUrl: string) {
     packageTaskId,
     packageStatusMessage,
     packageProgress,
+    folderName,
     auditReport,
     showingAuditReport,
     isAwaitingAudit,
@@ -343,6 +393,7 @@ export function useTaskManager(serverBaseUrl: string) {
     downloadSinglePackage,
     deleteHistoryItem,
     confirmAudit,
+    cancelTask,
     resumePolling,
     reopenAudit,
   };

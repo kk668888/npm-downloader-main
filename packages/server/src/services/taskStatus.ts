@@ -12,6 +12,8 @@ export interface TaskStatusItem {
   auditReport?: AuditReport;
   /** 任务令牌，用于审计确认等敏感操作的防伪造校验 */
   token: string;
+  /** 用户自定义的文件夹名称（用于 ZIP 下载时的文件名） */
+  folderName?: string;
 }
 
 const taskStatus = new Map<string, TaskStatusItem>();
@@ -27,7 +29,8 @@ export const setTaskStatus = (
   status: TaskStatus,
   message?: string,
   progress?: ProgressInfo,
-  auditReport?: AuditReport
+  auditReport?: AuditReport,
+  folderName?: string
 ): void => {
   const existing = taskStatus.get(taskId);
   const item: TaskStatusItem = {
@@ -37,6 +40,8 @@ export const setTaskStatus = (
     auditReport: auditReport ?? existing?.auditReport,
     // 首次创建生成 token，后续更新保留
     token: existing?.token ?? crypto.randomUUID(),
+    // folderName：显式传入 > 已有值 > undefined
+    folderName: folderName ?? existing?.folderName,
   };
   taskStatus.set(taskId, item);
   // 同步审计报告到 history（持久化）
@@ -120,4 +125,64 @@ export function clearAuditConfirmation(taskId: string): void {
     clearTimeout(entry.timer);
   }
   auditConfirmations.delete(taskId);
+}
+
+// ========================================
+// 任务取消机制 — 基于 AbortController
+// ========================================
+
+/** 每个任务对应的 AbortController，用于取消正在进行的下载操作 */
+const taskAbortControllers = new Map<string, AbortController>();
+
+/**
+ * 为任务创建 AbortController
+ * 在下载循环中通过 signal.aborted 判断任务是否被取消
+ *
+ * @param taskId 任务 ID
+ * @returns 创建的 AbortController 实例
+ */
+export function createTaskAbortController(taskId: string): AbortController {
+  const controller = new AbortController();
+  taskAbortControllers.set(taskId, controller);
+  return controller;
+}
+
+/**
+ * 取消指定任务
+ * 会 abort 该任务的所有下载操作，设置状态为 "cancelled"，并同步到历史记录
+ *
+ * @param taskId 任务 ID
+ * @returns 是否成功取消（任务存在且未完成时返回 true）
+ */
+export function cancelTask(taskId: string): boolean {
+  const controller = taskAbortControllers.get(taskId);
+  if (controller) {
+    controller.abort();
+    // setTaskStatus 内部会调用 upsertHistoryItem，无需重复调用
+    setTaskStatus(taskId, "cancelled", "任务已取消");
+    clearAuditConfirmation(taskId);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 检查任务是否已被取消
+ * 在下载循环的每个包下载前调用，实现快速退出
+ *
+ * @param taskId 任务 ID
+ * @returns 任务是否已被取消
+ */
+export function isTaskCancelled(taskId: string): boolean {
+  return taskAbortControllers.get(taskId)?.signal.aborted ?? false;
+}
+
+/**
+ * 任务完成后清理对应的 AbortController，释放内存
+ * 在任务完成、失败或取消后的 finally 块中调用
+ *
+ * @param taskId 任务 ID
+ */
+export function removeTaskAbortController(taskId: string): void {
+  taskAbortControllers.delete(taskId);
 }

@@ -64,6 +64,16 @@
       </Teleport>
     </div>
 
+    <!-- 自定义文件夹名称输入框（可选） -->
+    <Input
+      :model-value="folderName"
+      :disabled="busy"
+      placeholder="自定义文件夹名称（可选）"
+      icon="i-heroicons-folder"
+      size="md"
+      @update:model-value="$emit('update:folderName', $event)"
+    />
+
     <!-- Download Button -->
     <Button
       block
@@ -97,12 +107,16 @@ const props = defineProps<{
   statusMessage: string;
   progress: { current: number; total: number } | null;
   downloadUrl: string;
+  /** 用户自定义的文件夹名称（双向绑定，可选） */
+  folderName: string;
 }>();
 
 const emit = defineEmits<{
   (e: "update:packageName", value: string): void;
   (e: "download"): void;
   (e: "viewLogs", taskId: string): void;
+  /** 文件夹名称变更时向上传递 */
+  (e: "update:folderName", value: string): void;
 }>();
 
 const inputValue = computed({

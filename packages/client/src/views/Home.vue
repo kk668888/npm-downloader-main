@@ -22,9 +22,11 @@
           :task-id="taskId"
           :progress="taskProgress"
           :download-url="downloadUrl"
+          :folder-name="folderName"
           @select-file="file = $event"
           @upload="handleUpload"
           @view-logs="openLogViewer"
+          @update:folder-name="folderName = $event"
         />
       </Card>
 
@@ -44,9 +46,11 @@
           :status-message="packageStatusMessage"
           :progress="packageProgress"
           :download-url="packageDownloadUrl"
+          :folder-name="folderName"
           @update:package-name="packageName = $event"
           @download="handleDownloadPackage"
           @view-logs="openLogViewer"
+          @update:folder-name="folderName = $event"
         />
       </Card>
 
@@ -70,6 +74,7 @@
           :server-base-url="serverBaseUrl"
           @view-logs="openLogViewer"
           @reopen-audit="reopenAudit"
+          @cancel="handleCancelTask"
         />
       </Card>
     </div>
@@ -140,6 +145,7 @@ const {
   packageTaskId,
   packageStatusMessage,
   packageProgress,
+  folderName,
   downloadUrl,
   packageDownloadUrl,
   uploadFile,
@@ -149,6 +155,7 @@ const {
   showingAuditReport,
   isAwaitingAudit,
   confirmAudit,
+  cancelTask,
   resumePolling,
   reopenAudit,
 } = useTaskManager(serverBaseUrl);
@@ -305,6 +312,30 @@ const handleClearAll = async (): Promise<boolean> => {
   }
 };
 
+
+/**
+ * 取消当前进行中的下载任务
+ * 成功后重置任务状态并刷新历史记录，失败则弹出错误提示
+ */
+const handleCancelTask = async (tid: string) => {
+  const success = await cancelTask(tid);
+  if (success) {
+    uploading.value = false;
+    downloadingPackage.value = false;
+    toast.add("已取消", {
+      description: "下载任务已成功取消",
+      color: "orange",
+      icon: "i-heroicons-stop-circle",
+    });
+    refreshHistory();
+  } else {
+    toast.add("取消失败", {
+      description: "取消任务失败，请重试",
+      color: "red",
+      icon: "i-heroicons-x-circle",
+    });
+  }
+};
 
 // Task handlers
 const handleUpload = () => {

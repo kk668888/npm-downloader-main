@@ -4,48 +4,48 @@ setlocal enabledelayedexpansion
 title npm-downloader (Dev Mode)
 
 echo ========================================
-echo   npm-downloader 开发模式启动 v2.0
+echo   npm-downloader Dev Mode v2.0
 echo ========================================
 echo.
 
 set "PROJECT_ROOT=%~dp0"
 cd /d "%PROJECT_ROOT%"
 
-:: 检查 Node.js
+:: Check Node.js
 where node >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [错误] 未找到 Node.js
+    echo [ERROR] Node.js not found
     pause
     exit /b 1
 )
 
-:: 检查 pnpm
+:: Check pnpm
 where pnpm >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [提示] 正在安装 pnpm...
+    echo [INFO] Installing pnpm...
     npm install -g pnpm
 )
 
-:: 显示版本
-for /f "tokens=*" %%i in ('node --version') do echo [信息] Node.js: %%i
-for /f "tokens=*" %%i in ('pnpm --version') do echo [信息] pnpm: %%i
+:: Show versions
+for /f "tokens=*" %%i in ('node --version') do echo [INFO] Node.js: %%i
+for /f "tokens=*" %%i in ('pnpm --version') do echo [INFO] pnpm: %%i
 echo.
 
-:: 安装依赖
+:: Install dependencies
 if not exist "node_modules" (
-    echo [1/2] 正在安装依赖...
+    echo [1/2] Installing dependencies...
     call pnpm install
 )
 echo.
 
-:: 创建日志目录
+:: Create log directory
 if not exist "logs" mkdir logs
 
-:: 启动后端开发服务器（带热重载）
-echo [2/2] 启动开发服务器...
+:: Start dev servers
+echo [2/2] Starting dev servers...
 echo.
-echo   后端: tsx watch (支持热重载)
-echo   前端: Vite (支持 HMR)
+echo   Server: tsx watch (hot reload)
+echo   Client: Vite (HMR)
 echo.
 
 start "npm-downloader Server (Dev)" cmd /k "cd /d "%PROJECT_ROOT%" && pnpm exec turbo run dev --filter=@npm-downloader/server"
@@ -56,13 +56,13 @@ timeout /t 5 /nobreak >nul
 
 echo.
 echo ========================================
-echo   开发模式启动完成！
+echo   Dev mode started!
 echo ========================================
-echo   前端: http://localhost:3000 (Vite)
-echo   后端: http://localhost:3002 (tsx watch)
+echo   Frontend: http://localhost:3000 (Vite)
+echo   Backend:  http://localhost:3002 (tsx watch)
 echo.
-echo   修改代码会自动重载
-echo   停止服务: 运行 stop.bat
+echo   Auto-reload on code changes
+echo   Stop: run stop.bat
 echo ========================================
 echo.
 

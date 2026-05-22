@@ -50,6 +50,15 @@
       >
         日志
       </Button>
+      <!-- 取消任务按钮：仅在任务进行中（非终态）时显示 -->
+      <Button
+        size="xs"
+        color="red"
+        variant="soft"
+        @click="$emit('cancel', taskId)"
+      >
+        取消
+      </Button>
     </div>
   </div>
 </template>
@@ -70,5 +79,7 @@ const props = defineProps<{
 defineEmits<{
   (e: "viewLogs", taskId: string): void;
   (e: "reopenAudit", taskId: string): void;
+  /** 用户点击取消任务按钮时触发 */
+  (e: "cancel", taskId: string): void;
 }>();
 </script>

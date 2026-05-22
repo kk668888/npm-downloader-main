@@ -6,7 +6,7 @@ export type TaskType = "lockfile" | "package";
 /**
  * 任务状态
  */
-export type TaskStatus = "pending" | "auditing" | "processing" | "completed" | "failed";
+export type TaskStatus = "pending" | "auditing" | "processing" | "completed" | "failed" | "cancelled";
 
 /**
  * 进度信息
@@ -26,6 +26,8 @@ export interface HistoryItem {
   message?: string;
   createdAt: number;
   updatedAt: number;
+  /** 用户自定义的文件夹名称（用于 ZIP 文件命名） */
+  folderName?: string;
   zipUrl?: string;
   packageName?: string;
   packageVersion?: string;
@@ -55,6 +57,8 @@ export interface TaskStatusInfo {
   auditReport?: AuditReport;
   /** 任务令牌，用于审计确认等敏感操作的防伪造校验 */
   token?: string;
+  /** 用户自定义的文件夹名称 */
+  folderName?: string;
 }
 
 // ========================================

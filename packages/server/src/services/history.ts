@@ -80,6 +80,7 @@ export const upsertHistoryItem = (
       zipUrl: patch.zipUrl,
       packageName: patch.packageName,
       packagesCount: patch.packagesCount,
+      folderName: patch.folderName,
     };
     history.unshift(item);
     if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
@@ -102,6 +103,17 @@ export const upsertHistoryItem = (
 
 export const listHistory = (): HistoryItem[] => {
   return [...history].sort((a, b) => b.createdAt - a.createdAt);
+};
+
+/**
+ * 根据任务 ID 查找单条历史记录
+ * 用于下载端点获取 folderName 等信息
+ *
+ * @param taskId 任务 ID
+ * @returns 历史记录项，不存在则返回 undefined
+ */
+export const findHistoryItem = (taskId: string): HistoryItem | undefined => {
+  return history.find((h) => h.taskId === taskId);
 };
 
 /**
