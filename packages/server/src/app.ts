@@ -139,22 +139,22 @@ baseApp.use(app)
 const expressApp = baseApp
 
 // 下载端点
-// ZIP 文件在磁盘上以 taskId 命名（避免特殊字符问题）
-// 用户下载时的文件名优先使用 folderName，否则回退到 taskId
+// 优先用 folderName 命名的 ZIP 查找，回退到 taskId 命名
 expressApp.get(
   '/api/download/:taskId',
   (req: Request, res: Response) => {
     const { taskId } = req.params
-    const zipPath = path.join(TEMP_DIR, `${taskId}.zip`)
+    const historyItem = findHistoryItem(taskId)
+
+    // 计算 ZIP 文件名：有 folderName 则用 folderName.zip，否则用 taskId.zip
+    const dirName = historyItem?.folderName
+      ? historyItem.folderName.replace(/[\\/:*?"<>|]/g, '_').trim() || taskId
+      : taskId
+    const zipFileName = `${dirName}.zip`
+    const zipPath = path.join(TEMP_DIR, zipFileName)
 
     if (fs.existsSync(zipPath)) {
-      // 从历史记录中查找 folderName，用于设置下载文件名
-      const historyItem = findHistoryItem(taskId)
-      const downloadName = historyItem?.folderName
-        ? `${historyItem.folderName}.zip`
-        : `${taskId}.zip`
-
-      res.download(zipPath, downloadName, (err) => {
+      res.download(zipPath, zipFileName, (err) => {
         if (err) {
           console.error('Download error:', err)
           if (!res.headersSent) {

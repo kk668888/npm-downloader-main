@@ -58,7 +58,7 @@ echo.
 echo ========================================
 echo   Dev mode started!
 echo ========================================
-echo   Frontend: http://localhost:3000 (Vite)
+echo   Frontend: http://localhost:3003 (Vite)
 echo   Backend:  http://localhost:3002 (tsx watch)
 echo.
 echo   Auto-reload on code changes
@@ -66,6 +66,6 @@ echo   Stop: run stop.bat
 echo ========================================
 echo.
 
-start http://localhost:3000
+start http://localhost:303
 
 endlocal

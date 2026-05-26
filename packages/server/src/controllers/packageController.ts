@@ -39,7 +39,11 @@ export class PackageController {
       });
       setTaskStatus(taskId, "pending", "Initializing...", undefined, undefined, folderName);
 
-      const taskDir = path.join(TEMP_DIR, taskId);
+      // 使用 folderName 或 taskId 作为目录名（剔除不合法字符）
+      const dirName = folderName
+        ? folderName.replace(/[\\/:*?"<>|]/g, "_").trim() || taskId
+        : taskId;
+      const taskDir = path.join(TEMP_DIR, dirName);
       fs.mkdirSync(taskDir, { recursive: true });
 
       const allPackages = new Map<string, string>();
@@ -234,7 +238,7 @@ export class PackageController {
               fs.rmSync(taskDir, { recursive: true, force: true });
             }
             // 清理可能已生成的 ZIP 文件
-            const zipPath = path.join(TEMP_DIR, `${taskId}.zip`);
+            const zipPath = path.join(TEMP_DIR, `${dirName}.zip`);
             if (fs.existsSync(zipPath)) {
               fs.unlinkSync(zipPath);
             }
@@ -250,7 +254,7 @@ export class PackageController {
 
           setTaskStatus(taskId, "processing", "Compressing files...");
 
-          const zipPath = path.join(TEMP_DIR, `${taskId}.zip`);
+          const zipPath = path.join(TEMP_DIR, `${dirName}.zip`);
           const zipBytes = await createZip(taskDir, zipPath);
 
           addTaskLog(taskId, "info", `ZIP created: ${formatBytes(zipBytes)} MB`);
