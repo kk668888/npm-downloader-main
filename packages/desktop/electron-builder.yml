@@ -1,0 +1,67 @@
+# electron-builder 配置文件
+# 文档：https://www.electron.build/configuration/configuration
+
+appId: com.npm-downloader.desktop
+productName: "NPM Downloader"
+copyright: "Copyright © 2026"
+
+# 输出目录
+directories:
+  output: release
+  buildResources: assets
+
+# 包含在 asar 包内的文件
+files:
+  - src/**/*
+  - package.json
+  - "!**/*.map"
+
+# 额外资源（不放入 asar 包，通过 process.resourcesPath 访问）
+extraResources:
+  # 打包后的服务器（esbuild bundle 产物）
+  - from: build/server
+    to: server
+  # 前端静态文件
+  - from: ../client/dist
+    to: client/dist
+  # 应用图标等资源
+  - from: assets
+    to: assets
+    filter:
+      - "**/*.{png,ico,icns}"
+
+# Windows 配置
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: assets/icon.ico
+
+# NSIS 安装程序配置
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "NPM Downloader"
+  installerLanguages: ["zh_CN", "en_US"]
+  language: 2052
+
+# macOS 配置（预留）
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  icon: assets/icon.icns
+  category: public.app-category.developer-tools
+
+# Linux 配置（预留）
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  icon: assets
+  category: Development
+
+# 不将 node_modules 打入 asar（减小包体积）
+asar: true

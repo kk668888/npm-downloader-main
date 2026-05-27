@@ -8,13 +8,20 @@ import semver from "semver";
 import { addTaskLog } from "./taskLogger.js";
 
 /**
- * 严重漏洞处理策略（通过环境变量配置，延迟读取以兼容 dotenv 加载时序）
+ * 严重漏洞处理策略
  *
- * SKIP_CRITICAL_AUDIT=true        → 直接跳过，视为 safe（无需确认，直接下载）
- * ALLOW_CRITICAL_DOWNLOAD=true    → 降级为 risky（需用户确认后才能下载）
- * 均不设置（默认）                → blocked（禁止下载）
+ * 优先级：
+ * 1. 前端请求参数 blockCritical（布尔值，每次请求可变）
+ * 2. 环境变量 SKIP_CRITICAL_AUDIT / ALLOW_CRITICAL_DOWNLOAD（全局配置）
+ * 3. 默认：block（阻止下载）
+ *
+ * @param blockCritical 前端传入的超危停止开关：true=阻止，false=降级为需确认
  */
-const getCriticalPolicy = (): "skip" | "allow" | "block" => {
+const getCriticalPolicy = (blockCritical?: boolean): "skip" | "allow" | "block" => {
+  // 前端开关优先级最高
+  if (blockCritical === false) return "allow";
+  if (blockCritical === true) return "block";
+  // 回退到环境变量
   if (process.env.SKIP_CRITICAL_AUDIT === "true") return "skip";
   if (process.env.ALLOW_CRITICAL_DOWNLOAD === "true") return "allow";
   return "block";
@@ -44,11 +51,13 @@ const EMPTY_SUMMARY: Record<AuditSeverity, number> = {
  *
  * @param taskId 任务 ID，用于写日志
  * @param packages 要审计的包列表
+ * @param blockCritical 超危停止开关：true=发现严重漏洞直接阻止，false=降级为需确认
  * @returns 审计报告
  */
 export async function auditPackages(
   taskId: string,
-  packages: Array<{ name: string; version: string; scope?: string }>
+  packages: Array<{ name: string; version: string; scope?: string }>,
+  blockCritical?: boolean
 ): Promise<AuditReport> {
   // 去重：同名同版本只审计一次
   const uniqueMap = new Map<string, { name: string; version: string }>();
@@ -69,7 +78,7 @@ export async function auditPackages(
 
   // 使用总超时保护，防止网络问题导致永久阻塞
   const auditResult = await Promise.race([
-    runAudit(taskId, uniquePackages),
+    runAudit(taskId, uniquePackages, blockCritical),
     createTimeoutFallback(taskId, uniquePackages.length),
   ]);
 
@@ -85,7 +94,8 @@ export async function auditPackages(
  */
 async function runAudit(
   taskId: string,
-  packages: Array<{ name: string; version: string }>
+  packages: Array<{ name: string; version: string }>,
+  blockCritical?: boolean
 ): Promise<AuditReport> {
   // 批量查询 npm advisories API（仅一次 HTTP 请求）
   const advisories = await queryAdvisories(taskId, packages);
@@ -148,7 +158,7 @@ async function runAudit(
   // 其他漏洞 → risky（需用户确认）
   // 无漏洞 → safe
   const auditStatus = summary.critical > 0
-    ? (getCriticalPolicy() === "skip" ? "safe" : getCriticalPolicy() === "allow" ? "risky" : "blocked")
+    ? (getCriticalPolicy(blockCritical) === "skip" ? "safe" : getCriticalPolicy(blockCritical) === "allow" ? "risky" : "blocked")
     : vulnerablePackages > 0
       ? "risky"
       : "safe";

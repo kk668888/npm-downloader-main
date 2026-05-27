@@ -23,10 +23,12 @@
           :progress="taskProgress"
           :download-url="downloadUrl"
           :folder-name="folderName"
+          :block-critical="blockCritical"
           @select-file="file = $event"
           @upload="handleUpload"
           @view-logs="openLogViewer"
           @update:folder-name="folderName = $event"
+          @update:block-critical="blockCritical = $event"
         />
       </Card>
 
@@ -47,10 +49,12 @@
           :progress="packageProgress"
           :download-url="packageDownloadUrl"
           :folder-name="folderName"
+          :block-critical="blockCritical"
           @update:package-name="packageName = $event"
           @download="handleDownloadPackage"
           @view-logs="openLogViewer"
           @update:folder-name="folderName = $event"
+          @update:block-critical="blockCritical = $event"
         />
       </Card>
 
@@ -110,6 +114,7 @@
   <AuditReport
     :open="showingAuditReport"
     :report="auditReport"
+    :task-status="currentAuditTaskStatus"
     @confirm="handleAuditConfirm"
     @cancel="handleAuditCancel"
   />
@@ -146,6 +151,7 @@ const {
   packageStatusMessage,
   packageProgress,
   folderName,
+  blockCritical,
   downloadUrl,
   packageDownloadUrl,
   uploadFile,
@@ -281,6 +287,17 @@ const handleViewHistoryAudit = (taskId: string) => {
   }
 };
 
+// 当前审计报告关联的任务状态（用于判断是否还能继续下载）
+const currentAuditTaskStatus = computed(() => {
+  if (!auditReport.value) return undefined;
+  const tid = auditReport.value.taskId;
+  // 从活跃任务或历史记录中查找状态
+  if (tid === taskId.value) return taskStatusText.value || undefined;
+  if (tid === packageTaskId.value) return packageStatusMessage.value ? "processing" : undefined;
+  const historyItem = historyItems.value.find((h) => h.taskId === tid);
+  return historyItem?.status;
+});
+
 // 清空所有历史记录
 const handleClearAll = async (): Promise<boolean> => {
   try {
@@ -324,7 +341,7 @@ const handleCancelTask = async (tid: string) => {
     downloadingPackage.value = false;
     toast.add("已取消", {
       description: "下载任务已成功取消",
-      color: "orange",
+      color: "yellow",
       icon: "i-heroicons-stop-circle",
     });
     refreshHistory();

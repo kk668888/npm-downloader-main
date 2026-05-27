@@ -41,8 +41,18 @@
       placeholder="自定义文件夹名称（可选）"
       icon="i-heroicons-folder"
       size="md"
-      @update:model-value="$emit('update:folderName', $event)"
+      @update:model-value="$emit('update:folderName', String($event))"
     />
+
+    <!-- 超危停止开关 -->
+    <div class="flex items-center justify-between">
+      <Toggle
+        :model-value="blockCritical"
+        :disabled="busy"
+        label="发现严重漏洞时阻止下载"
+        @update:model-value="$emit('update:blockCritical', $event)"
+      />
+    </div>
 
     <!-- Upload Button -->
     <Button
@@ -61,6 +71,7 @@
 import Button from './ui/Button.vue';
 import Icon from './ui/Icon.vue';
 import Input from './ui/Input.vue';
+import Toggle from './ui/Toggle.vue';
 
 const props = defineProps<{
   selectedFile: File | null;
@@ -72,6 +83,8 @@ const props = defineProps<{
   downloadUrl: string;
   /** 用户自定义的文件夹名称（双向绑定，可选） */
   folderName: string;
+  /** 超危停止开关（双向绑定） */
+  blockCritical: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -80,6 +93,8 @@ const emit = defineEmits<{
   (e: "viewLogs", taskId: string): void;
   /** 文件夹名称变更时向上传递 */
   (e: "update:folderName", value: string): void;
+  /** 超危停止开关变更时向上传递 */
+  (e: "update:blockCritical", value: boolean): void;
 }>();
 
 const isDragging = ref(false);

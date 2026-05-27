@@ -22,10 +22,10 @@
       </div>
     </div>
 
-    <!-- Package Name with Version -->
+    <!-- 标题：优先显示 folderName，否则显示包名 -->
     <div class="mb-1">
-      <div v-if="item.packageName" class="font-mono text-xs text-base-200 truncate" :title="fullPackageName">
-        {{ displayPackageName }}
+      <div class="text-xs text-base-200 truncate font-medium" :title="cardTitle">
+        {{ cardTitle }}
       </div>
       <div v-if="item.packageVersion" class="text-[10px] text-base-500 font-mono">
         v{{ item.packageVersion }}
@@ -66,6 +66,14 @@
       >
         下载
       </Button>
+      <Button
+        size="xs"
+        color="gray"
+        variant="ghost"
+        icon="i-heroicons-folder-open"
+        :loading="openingFolder"
+        @click="handleOpenFolder"
+      />
       <Button
         size="xs"
         color="gray"
@@ -128,6 +136,7 @@ const emit = defineEmits<{
 }>();
 
 const deleting = ref(false);
+const openingFolder = ref(false);
 const popconfirmRef = ref<InstanceType<typeof Popconfirm> | null>(null);
 
 /** 审计按钮颜色：根据审计状态区分 */
@@ -164,24 +173,27 @@ const handleDelete = async () => {
   }
 };
 
-// Display package name (without version if already shown separately)
-const displayPackageName = computed(() => {
-  if (!props.item.packageName) return "";
-  const name = props.item.packageName;
-  if (name.includes("@") && !name.startsWith("@")) {
-    const atIndex = name.lastIndexOf("@");
-    return name.substring(0, atIndex);
+const handleOpenFolder = async () => {
+  openingFolder.value = true;
+  try {
+    await fetch(`${props.serverBaseUrl}/api/open-folder/${props.item.taskId}`);
+  } catch {
+    // 静默失败
+  } finally {
+    openingFolder.value = false;
   }
-  return name;
-});
+};
 
-// Full package name for title attribute
-const fullPackageName = computed(() => {
-  const name = props.item.packageName;
-  const version = props.item.packageVersion;
-  if (name && version) {
-    return `${name}@${version}`;
+/** 卡片标题：优先用 folderName，其次用包名，最后用 taskId 前缀 */
+const cardTitle = computed(() => {
+  if (props.item.folderName) return props.item.folderName;
+  if (props.item.packageName) {
+    const name = props.item.packageName;
+    if (name.includes("@") && !name.startsWith("@")) {
+      return name.substring(0, name.lastIndexOf("@"));
+    }
+    return name;
   }
-  return name || "";
+  return props.item.taskId.slice(0, 8);
 });
 </script>

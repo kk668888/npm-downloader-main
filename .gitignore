@@ -77,3 +77,6 @@ test-results/
 
 # Package archives
 *.tar.gz
+packages/desktop/release/
+NPM Downloader Setup 1.0.0.exe
+NPM Downloader Setup 1.0.0.exe.blockmap

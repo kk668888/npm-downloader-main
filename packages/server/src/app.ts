@@ -132,6 +132,34 @@ const app = createExpressServer({
   defaultErrorHandler: false // Use custom error handler
 })
 
+// 桌面模式下，在 routing-controllers 挂载之前注册静态文件服务
+// 这样 /、/assets/ 等非 API 路径由 express.static 处理，不会被 routing-controllers 吞掉
+if (process.env.DESKTOP_MODE === 'true') {
+  const clientDistPath = process.env.CLIENT_DIST_PATH
+    || path.resolve(__dirname, '../../client/dist')
+
+  console.log(`[DESKTOP] CLIENT_DIST_PATH: ${clientDistPath}`)
+  console.log(`[DESKTOP] Directory exists: ${fs.existsSync(clientDistPath)}`)
+  const indexPath = path.join(clientDistPath, 'index.html')
+  console.log(`[DESKTOP] index.html exists: ${fs.existsSync(indexPath)}`)
+
+  baseApp.use(express.static(clientDistPath))
+
+  // SPA fallback：非 /api、非 /health 的 GET 请求返回 index.html
+  baseApp.use((req: Request, res: Response, next) => {
+    if (req.method === 'GET' && req.accepts('html') && !req.path.startsWith('/api') && !req.path.startsWith('/health')) {
+      res.sendFile(indexPath, (err) => {
+        if (err) {
+          console.error(`[DESKTOP] Failed to send index.html:`, err)
+          next(err)
+        }
+      })
+    } else {
+      next()
+    }
+  })
+}
+
 // 将 routing-controllers 的路由挂载到基础 app 上
 baseApp.use(app)
 
@@ -167,6 +195,35 @@ expressApp.get(
     }
   }
 )
+
+// 打开任务目录端点：用系统文件管理器打开 ZIP 所在的临时目录
+// 仅限本地使用（桌面模式 / 本地开发）
+import { exec } from 'child_process'
+expressApp.get('/api/open-folder/:taskId', (req: Request, res: Response) => {
+  const { taskId } = req.params
+  const historyItem = findHistoryItem(taskId)
+
+  const dirName = historyItem?.folderName
+    ? historyItem.folderName.replace(/[\\/:*?"<>|]/g, '_').trim() || taskId
+    : taskId
+
+  // 优先打开任务目录（解压前的文件夹），不存在则打开 TEMP_DIR
+  const taskDir = path.join(TEMP_DIR, dirName)
+  const targetDir = fs.existsSync(taskDir) ? taskDir : TEMP_DIR
+
+  const command =
+    process.platform === 'win32' ? `explorer "${targetDir}"` :
+    process.platform === 'darwin' ? `open "${targetDir}"` :
+    `xdg-open "${targetDir}"`
+
+  exec(command, (err) => {
+    if (err) {
+      res.status(500).json({ error: 'Failed to open folder' })
+    } else {
+      res.json({ ok: true, path: targetDir })
+    }
+  })
+})
 
 // 任务状态查询端点（不暴露 token，token 仅通过初始创建响应返回）
 expressApp.get('/api/task/:taskId', (req: Request, res: Response) => {

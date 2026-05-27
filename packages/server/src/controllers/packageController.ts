@@ -17,7 +17,7 @@ import crypto from "crypto";
 @JsonController()
 export class PackageController {
   @Post("/download-package")
-  async downloadPackage(@Body() body: { packageName?: string; folderName?: string }, @Res() res: Response) {
+  async downloadPackage(@Body() body: { packageName?: string; folderName?: string; blockCritical?: boolean }, @Res() res: Response) {
     try {
       const packageName = body.packageName;
       if (!packageName) {
@@ -28,6 +28,8 @@ export class PackageController {
 
       // 获取用户自定义的文件夹名称（可选）
       const folderName = body.folderName || undefined;
+      // 超危停止开关：默认 true（阻止）
+      const blockCritical = body.blockCritical !== false;
 
       upsertHistoryItem(taskId, {
         type: "package",
@@ -115,7 +117,7 @@ export class PackageController {
               version: ver,
             })
           );
-          const auditReport = await auditPackages(taskId, packageArray);
+          const auditReport = await auditPackages(taskId, packageArray, blockCritical);
           setTaskStatus(taskId, "auditing", "安全审计完成", undefined, auditReport);
 
           // safe 自动继续，blocked 直接失败，risky 和 unavailable 需要用户确认

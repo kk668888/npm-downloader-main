@@ -1,0 +1,30 @@
+{
+  "name": "@npm-downloader/desktop",
+  "version": "1.0.0",
+  "description": "NPM Downloader Desktop Application",
+  "main": "src/main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k -n server,client,electron -c blue,green,orange \"pnpm:dev:server\" \"pnpm:dev:client\" \"pnpm:dev:electron\"",
+    "dev:server": "cross-env DESKTOP_MODE=true pnpm -C ../server dev",
+    "dev:client": "pnpm -C ../client dev",
+    "dev:electron": "wait-on http-get://localhost:3002/health && wait-on http://localhost:3003 && cross-env ELECTRON_DISABLE_SECURITY_WARNINGS=true electron .",
+    "bundle:server": "node scripts/bundle-server.js",
+    "build:all": "pnpm -C ../types build && pnpm -C ../core build && pnpm -C ../server build && pnpm -C ../client build",
+    "build": "pnpm run build:all && pnpm run bundle:server && electron-builder --win",
+    "build:dir": "pnpm run build:all && pnpm run bundle:server && electron-builder --win --dir",
+    "build:mac": "pnpm run build:all && pnpm run bundle:server && electron-builder --mac",
+    "build:linux": "pnpm run build:all && pnpm run bundle:server && electron-builder --linux",
+    "clean": "rm -rf build release"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^35.3.0",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.5",
+    "wait-on": "^8.0.3"
+  }
+}

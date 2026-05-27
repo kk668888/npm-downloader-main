@@ -80,6 +80,8 @@ export class LockfileController {
 
       // 从 FormData 中获取用户自定义的文件夹名称（multer 处理后 req.body 才有值）
       const folderName = (req.body?.folderName as string) || undefined;
+      // 超危停止开关：默认 true（阻止），前端传 "false" 或 "0" 表示关闭
+      const blockCritical = req.body?.blockCritical !== "false" && req.body?.blockCritical !== "0";
 
       // 初始化任务状态（会自动生成 token，同时保存 folderName）
       setTaskStatus(taskId, "pending", "准备中...", undefined, undefined, folderName);
@@ -97,7 +99,7 @@ export class LockfileController {
       const taskStatusItem = getTaskStatus(taskId);
 
       // Fire-and-forget：立即返回 taskId + token，后台执行审计+下载
-      processAll(taskId, packages, skipped, folderName).catch((err) => {
+      processAll(taskId, packages, skipped, folderName, blockCritical).catch((err) => {
         console.error("Lockfile processing failed:", err);
       });
 
@@ -135,7 +137,8 @@ async function processAll(
   taskId: string,
   packages: PackageInfo[],
   skippedDeps: SkippedDep[],
-  folderName?: string
+  folderName?: string,
+  blockCritical?: boolean
 ): Promise<void> {
   // 创建 AbortController，用于支持任务取消
   createTaskAbortController(taskId);
@@ -153,7 +156,8 @@ async function processAll(
       packages.map((p: PackageInfo) => ({
         name: p.scope ? `${p.scope}/${p.name}` : p.name,
         version: p.version,
-      }))
+      })),
+      blockCritical
     );
 
     // 存储审计报告到任务状态（附带 skippedDeps）

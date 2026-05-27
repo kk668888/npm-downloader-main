@@ -29,6 +29,7 @@ declare module 'vue' {
     SelectMenu: typeof import('./components/ui/SelectMenu.vue')['default']
     TaskCard: typeof import('./components/TaskCard.vue')['default']
     TaskHistory: typeof import('./components/TaskHistory.vue')['default']
+    Toggle: typeof import('./components/ui/Toggle.vue')['default']
     UploadPanel: typeof import('./components/UploadPanel.vue')['default']
   }
 }

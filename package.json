@@ -6,7 +6,10 @@
         "build": "turbo run build",
         "test": "turbo run test",
         "clean": "turbo run clean",
-        "dev": "turbo run dev"
+        "dev": "turbo run dev",
+        "dev:desktop": "pnpm -C packages/desktop dev",
+        "build:desktop": "pnpm -C packages/desktop build",
+        "build:desktop:dir": "pnpm -C packages/desktop build:dir"
     },
     "devDependencies": {
         "tslib": "^2.8.1",

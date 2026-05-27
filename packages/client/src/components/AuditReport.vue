@@ -230,10 +230,10 @@
                 class="px-5 py-2 text-xs font-medium rounded-md text-base-400 hover:text-base-200 hover:bg-base-800/50 transition-colors"
                 @click="$emit('cancel')"
               >
-                {{ isBlocked ? '关闭' : '取消' }}
+                {{ (isBlocked || isTaskFinished) ? '关闭' : '取消' }}
               </button>
               <button
-                v-if="!isBlocked"
+                v-if="!isBlocked && !isTaskFinished"
                 class="px-5 py-2 text-xs font-medium rounded-md transition-colors"
                 :class="confirmButtonClass"
                 @click="$emit('confirm')"
@@ -254,6 +254,8 @@ import type { AuditReport, PackageAuditResult, AuditSeverity, SkippedDep } from 
 const props = defineProps<{
   open: boolean;
   report: AuditReport | null;
+  /** 当前任务状态，用于判断是否还能继续下载 */
+  taskStatus?: string;
 }>();
 
 defineEmits<{
@@ -265,6 +267,11 @@ const isSafe = computed(() => props.report?.auditStatus === "safe");
 const isRisky = computed(() => props.report?.auditStatus === "risky");
 const isBlocked = computed(() => props.report?.auditStatus === "blocked");
 const isUnavailable = computed(() => props.report?.auditStatus === "unavailable");
+
+/** 任务已终态（完成/失败/取消），不能再继续下载 */
+const isTaskFinished = computed(() =>
+  ["completed", "failed", "cancelled"].includes(props.taskStatus || "")
+);
 
 const headerIconBg = computed(() => {
   if (isBlocked.value) return "bg-danger/20";

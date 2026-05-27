@@ -21,6 +21,9 @@ export function useTaskManager(serverBaseUrl: string) {
   // 用户自定义文件夹名称（可选，为空时后端使用 taskId）
   const folderName = ref("");
 
+  // 超危停止开关：true=发现严重漏洞直接阻止下载，false=降级为需用户确认
+  const blockCritical = ref(true);
+
   // 审计相关状态
   const auditReport = ref<AuditReport | null>(null);
   const showingAuditReport = ref(false);
@@ -180,6 +183,8 @@ export function useTaskManager(serverBaseUrl: string) {
     if (folderName.value.trim()) {
       formData.append("folderName", folderName.value.trim());
     }
+    // 超危停止开关
+    formData.append("blockCritical", String(blockCritical.value));
 
     try {
       const response = await fetch(`${serverBaseUrl}/api/upload`, {
@@ -270,6 +275,8 @@ export function useTaskManager(serverBaseUrl: string) {
           packageName: packageName.value,
           // 如果用户填写了自定义文件夹名称，一并传递
           ...(folderName.value.trim() ? { folderName: folderName.value.trim() } : {}),
+          // 超危停止开关
+          blockCritical: blockCritical.value,
         }),
       });
       const data = await response.json();
@@ -381,6 +388,7 @@ export function useTaskManager(serverBaseUrl: string) {
     packageStatusMessage,
     packageProgress,
     folderName,
+    blockCritical,
     auditReport,
     showingAuditReport,
     isAwaitingAudit,
