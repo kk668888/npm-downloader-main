@@ -1,9 +1,9 @@
 import path from "path";
 import pLimit from "p-limit";
-import { parseLockFile, parsePackageTgzUrl } from "./parser.js";
+import { parseLockFile, resolvePackageUrl } from "./parser.js";
 import { downloadTgzFile } from "./downloader.js";
 import { clearDownloadPath, ensureDownloadPath } from "./utils.js";
-import type { PackageUrlInfo } from "./types.js";
+import type { PackageInfo, PackageUrlInfo } from "./types.js";
 import { logger } from "./logger.js";
 const limit = pLimit(6);
 
@@ -101,9 +101,11 @@ const main = async (): Promise<void> => {
 
   const packageSelection =
     typeof limitOption === "number" ? packages.slice(0, limitOption) : packages;
-  const tgzInfos: PackageUrlInfo[] = packageSelection.map((item: { scope?: string; name: string; version: string }) => ({
+  // 注意：item 必须用 PackageInfo 类型，才能把解析阶段透传的 tarball 字段带下去，
+  // 否则显式注解为 { scope; name; version } 会把 tarball 字段丢掉，导致回退到硬拼 URL。
+  const tgzInfos: PackageUrlInfo[] = packageSelection.map((item: PackageInfo) => ({
     ...item,
-    url: parsePackageTgzUrl(item),
+    url: resolvePackageUrl(item),
   }));
   clearDownloadPath(downloadPath);
   ensureDownloadPath(downloadPath);

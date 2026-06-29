@@ -1,4 +1,4 @@
-import { parsePackage, parsePackageTgzUrl } from "../src/parser";
+import { parsePackage, parsePackageTgzUrl, resolvePackageUrl } from "../src/parser";
 import type { PackageInfo } from "../src/types";
 
 describe("parser module", () => {
@@ -41,6 +41,30 @@ describe("parser module", () => {
       };
       const url = parsePackageTgzUrl(info);
       expect(url).toBe("https://registry.npmjs.org/@scope/pkg/-/pkg-1.2.3.tgz");
+    });
+  });
+
+  describe("resolvePackageUrl", () => {
+    it("当 pkg.tarball 存在时，应直接返回该 tarball（镜像源/私有源场景）", () => {
+      const mirrorTarball =
+        "https://registry.npmmirror.com/lodash/-/lodash-4.17.21.tgz";
+      const info: PackageInfo = {
+        name: "lodash",
+        version: "4.17.21",
+        tarball: mirrorTarball,
+      };
+
+      expect(resolvePackageUrl(info)).toBe(mirrorTarball);
+    });
+
+    it("当 pkg.tarball 缺失时，应回退到 parsePackageTgzUrl 的硬拼结果", () => {
+      const info: PackageInfo = { name: "lodash", version: "4.17.21" };
+
+      // fallback 必须与 parsePackageTgzUrl 完全一致
+      expect(resolvePackageUrl(info)).toBe(parsePackageTgzUrl(info));
+      expect(resolvePackageUrl(info)).toBe(
+        "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
+      );
     });
   });
 });

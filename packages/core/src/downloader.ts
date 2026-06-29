@@ -43,6 +43,19 @@ export function buildTgzFileName(urlInfo: Pick<PackageUrlInfo, "scope" | "name" 
  *    删除半成品 tgz，避免损坏文件被混入最终 ZIP。
  * 4. 进度：通过 Transform 流统计已写入字节数，输出进度日志。
  *
+ * 【安全说明：SSRF 信任模型】
+ * 本函数会 `fetch(urlInfo.url)`，而该 URL 来自用户上传的 pnpm-lock.yaml 的
+ * `resolution.tarball`（完全由 lockfile 决定）。在当前信任模型下——用户主动
+ * 上传自己的 lockfile 做离线下载、操作者即受益人——SSRF（Server-Side Request
+ * Forgery）风险可接受。
+ *
+ * 若未来将该服务开放给不可信用户，需在发起请求前增加下述防护：
+ * - 协议白名单：仅允许 `https:`（必要时可放宽到 `http:`）。
+ * - 拒绝私有 / 回环 / 链路本地 IP 段：127.0.0.0/8、10.0.0.0/8、172.16.0.0/12、
+ *   192.168.0.0/16、169.254.0.0/16、::1、fc00::/7 等。
+ * - 拒绝 IP 字面量 hostname（如 `http://169.254.169.254/`），强制要求合法域名。
+ * - 对解析出的目标 IP 与重定向后的 Location 一并校验，防止 DNS Rebinding。
+ *
  * @param urlInfo 包 URL 信息
  * @param downloadPath 落盘目录（需已存在）
  * @throws HTTP 错误 / 超时 / 网络错误 / 流错误

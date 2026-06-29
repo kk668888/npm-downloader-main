@@ -4,11 +4,15 @@
  * @property scope - (Optional) The scope of the package (e.g., "@types").
  * @property name - The name of the package.
  * @property version - The version of the package.
+ * @property tarball - (Optional) 来自 pnpm-lock.yaml 中 packages 段的
+ *   `resolution.tarball`，是镜像源/私有源等场景下的真实下载地址。
+ *   缺失时下载侧需要回退到由 name/version 推断出的 URL（parsePackageTgzUrl）。
  */
 export interface PackageInfo {
   scope?: string;
   name: string;
   version: string;
+  tarball?: string;
 }
 export interface PackageUrlInfo extends PackageInfo {
   url: string;

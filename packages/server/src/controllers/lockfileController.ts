@@ -7,7 +7,7 @@ import pLimit from "p-limit";
 import {
   downloadTgzFile,
   parseLockFile,
-  parsePackageTgzUrl,
+  resolvePackageUrl,
   type PackageInfo,
   type PackageUrlInfo,
 } from "@npm-downloader/core";
@@ -110,7 +110,13 @@ export class LockfileController {
 
       const taskStatusItem = getTaskStatus(taskId);
 
-      processAll(taskId, packages, skipped, folderName, blockCritical).catch((error) => {
+      processAll(
+        taskId,
+        packages,
+        skipped,
+        folderName,
+        blockCritical
+      ).catch((error) => {
         console.error("Lockfile processing failed:", error);
       });
 
@@ -147,6 +153,8 @@ async function processAll(
   createTaskAbortController(taskId);
 
   try {
+    const resolvedPackages = packages;
+
     setTaskStatus(taskId, "auditing", "正在审计包安全...");
     upsertHistoryItem(taskId, {
       status: "auditing",
@@ -155,7 +163,7 @@ async function processAll(
 
     const auditReport = await auditPackages(
       taskId,
-      packages.map((pkg) => ({
+      resolvedPackages.map((pkg) => ({
         name: getFullPackageName(pkg),
         version: pkg.version,
       })),
@@ -221,17 +229,17 @@ async function processAll(
     fs.mkdirSync(taskDir, { recursive: true });
 
     const packageBySpec = new Map<string, PackageInfo>(
-      packages.map((pkg) => [`${getFullPackageName(pkg)}@${pkg.version}`, pkg])
+      resolvedPackages.map((pkg) => [`${getFullPackageName(pkg)}@${pkg.version}`, pkg])
     );
 
-    const totalPackages = packages.length;
+    const totalPackages = resolvedPackages.length;
     const limit = pLimit(DOWNLOAD_CONCURRENCY);
     let successCount = 0;
     let failCount = 0;
     let completedCount = 0;
     const failedPackages: FailedPackage[] = [];
 
-    const downloadPromises = packages.map((pkg) =>
+    const downloadPromises = resolvedPackages.map((pkg) =>
       limit(async () => {
         if (isTaskCancelled(taskId)) {
           return;
@@ -239,7 +247,7 @@ async function processAll(
 
         const urlInfo: PackageUrlInfo = {
           ...pkg,
-          url: parsePackageTgzUrl(pkg),
+          url: resolvePackageUrl(pkg),
         };
         const fullName = getFullPackageName(pkg);
         const pkgSpec = `${fullName}@${pkg.version}`;
@@ -306,7 +314,7 @@ async function processAll(
 
         const urlInfo: PackageUrlInfo = {
           ...pkg,
-          url: parsePackageTgzUrl(pkg),
+          url: resolvePackageUrl(pkg),
         };
 
         addTaskLog(taskId, "info", `Retry pass download for ${pkgSpec}`);
@@ -332,7 +340,7 @@ async function processAll(
       );
     }
 
-    const missing = findMissingPackages(taskDir, packages);
+    const missing = findMissingPackages(taskDir, resolvedPackages);
     const allFailedPackages = mergeMissingFailures(failedPackages, missing);
     if (missing.length > 0) {
       addTaskLog(taskId, "warn", `检测到 ${missing.length} 个包文件缺失，已按失败处理`);
