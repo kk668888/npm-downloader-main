@@ -28,10 +28,7 @@ import {
   waitForAuditConfirmation,
 } from "../services/taskStatus.js";
 import { addTaskLog } from "../services/taskLogger.js";
-import {
-  resolvePeerReserve,
-  type ResolvedPeerPackage,
-} from "../services/peerReserveService.js";
+import { resolvePeerReserve } from "../services/peerReserveService.js";
 import { cleanupAll } from "../utils/cleanup.js";
 import {
   decideFinalStatus,
@@ -42,9 +39,9 @@ import {
 import { ValidationError } from "../utils/errors.js";
 import {
   buildExistingSpecs,
-  mapResolvedToPackageInfos,
-  mergePeerReservePackages,
   parseIncludePeerReserveFlag,
+  racePeerReserveWithTimeout,
+  type RacePeerReserveResult,
 } from "../utils/peerReserveMerge.js";
 import { retryWithBackoff } from "../utils/retry.js";
 import { createZip, formatBytes } from "../utils/zip.js";
@@ -72,11 +69,20 @@ function getFullPackageName(pkg: Pick<PackageInfo, "scope" | "name">): string {
  *   1) 开关关闭 或 无候选 → 直接返回原 packages（行为与历史完全一致，不联网）；
  *   2) 开关打开 且 有候选 →
  *      a. 基于 packages 构造 existingSpecs（lockfile 全集，去重口径与 service 一致）；
- *      b. 调用 resolvePeerReserve 联网递归解析（pacote），concurrency=8，
- *         onProgress 流式输出到任务日志；
- *      c. 把 ResolvedPeerPackage[] 转换成 PackageInfo[]（scope/name 拆分 + tarball）；
- *      d. 与原 packages 不可变合并；
- *      e. 输出汇总日志（新增 N 个、失败 M 个），失败条目逐条 warn。
+ *      b. 进入联网解析前把任务状态推进到 processing（避免“假死”）；
+ *      c. 委托 racePeerReserveWithTimeout 执行“Promise.race 强制超时”：
+ *         - 本地 setTimeout timeoutPromise 与 resolvePeerReserve race；
+ *         - 超时赢得 race → 放弃 peer 储备，返回 [...packages]，主流程继续；
+ *         - 正常 → 转换 + 不可变合并 peer 储备包；
+ *      d. 把纯函数返回的 logEvents 逐条落到 addTaskLog（解耦纯函数与日志副作用）。
+ *
+ * 关键修复（第 2 次修复，前情见 commit 1f3118f）：
+ *   上次用 AbortController + signal 超时，依赖“pacote 响应 signal 才能让
+ *   resolvePeerReserve 返回”。实测 pacote@21 的 manifest 不响应 AbortSignal，
+ *   service 内 Promise.all 永不 resolve、resolvePeerReserve 永不返回、controller 永久挂起。
+ *   本次改为 controller 层 Promise.race([resolvePeerReserve, 本地 setTimeout timeoutPromise])：
+ *   Node 事件循环保证 setTimeout 到点必然触发，**不再依赖 pacote 行为**。
+ *   保留 AbortController 仅为“尽力停止内部请求、释放资源”，**不依赖**它让流程继续。
  *
  * immutability：永不修改入参 packages / candidates，始终返回新数组。
  * 失败隔离：service 内部已对单包失败做隔离（记入 skipped），
@@ -86,7 +92,7 @@ function getFullPackageName(pkg: Pick<PackageInfo, "scope" | "name">): string {
  * @param packages          lockfile 解析出的原始 packages（只读）
  * @param includePeerReserve peer 储备开关
  * @param candidates        Phase 1 产出的 peer 储备候选
- * @returns 合并后的 packages 数组（开关关闭时即原 packages 引用）
+ * @returns 合并后的 packages 数组（开关关闭时即原 packages 的副本）
  */
 async function resolveAndMergePeerReserve(
   taskId: string,
@@ -94,7 +100,7 @@ async function resolveAndMergePeerReserve(
   includePeerReserve: boolean,
   candidates: ReadonlyArray<PeerReserveCandidate>
 ): Promise<PackageInfo[]> {
-  // 开关关闭 或 无候选：直接返回原 packages，行为与历史完全一致（关键：不破坏现有流程）
+  // 开关关闭 或 无候选：直接返回原 packages 的副本，行为与历史完全一致（关键：不破坏现有流程）
   if (!includePeerReserve || candidates.length === 0) {
     return [...packages];
   }
@@ -116,82 +122,42 @@ async function resolveAndMergePeerReserve(
     `peer 储备：开始解析 ${candidates.length} 个候选（开关已开启，超时 ${PEER_RESERVE_TIMEOUT_MS / 1000}s）`
   );
 
-  // 2) AbortController + setTimeout 做整体超时；signal 透传给 pacote.manifest。
-  //    到点 abort：进行中的 manifest 以 AbortError reject → service 现有 .catch 记入 skipped，
-  //    resolvePeerReserve 仍正常返回（已 collected 的 packages + skipped），不抛出。
+  // 2) AbortController —— 仅为“尽力停止内部 pacote 请求、释放底层 socket”。
+  //    **不依赖**它让 resolvePeerReserve 返回（实测 pacote@21 不响应 AbortSignal）。
+  //    真正的超时强制由下面 racePeerReserveWithTimeout 内的 Promise.race 保证。
   const controller = new AbortController();
-  const timer = setTimeout(
+  const abortTimer = setTimeout(
     () => controller.abort(),
     PEER_RESERVE_TIMEOUT_MS
   );
 
-  // 防御性：即便 service 意外抛错（理论上不会，signal abort 已被内部 catch），
-  // 也降级为“跳过 peer 储备”，返回 [...packages]，绝不中断 processAll。
-  let result;
+  // 3) 委托纯函数：Promise.race([resolvePeerReserve, 本地 setTimeout timeoutPromise])。
+  //    该函数把 race + 超时判定 + 转换 + 不可变合并全部封装为纯函数（无日志副作用），
+  //    返回 { packages, logEvents, timedOut }，便于单测注入 mock 验证超时强制生效。
+  let raced: RacePeerReserveResult;
   try {
-    result = await resolvePeerReserve(
-      [...candidates],
-      {
-        existingSpecs,
-        concurrency: 8,
-        onProgress: (msg) => addTaskLog(taskId, "info", msg),
-        signal: controller.signal,
-      }
-    );
-  } catch (error) {
-    // service 内部已做失败隔离，正常不会走到这里；走到这里说明出现未预期异常。
-    clearTimeout(timer);
-    const errMsg = error instanceof Error ? error.message : String(error);
-    addTaskLog(
-      taskId,
-      "warn",
-      `peer 储备解析异常，已跳过 peer 储备并继续主流程：${errMsg}`
-    );
-    return [...packages];
+    raced = await racePeerReserveWithTimeout({
+      resolvePeerReserve,
+      candidates,
+      basePackages: packages,
+      existingSpecs,
+      timeoutMs: PEER_RESERVE_TIMEOUT_MS,
+      signal: controller.signal,
+      onProgress: (msg) => addTaskLog(taskId, "info", msg),
+    });
+  } finally {
+    // finally 保证：无论正常 / 超时 / 异常，abortTimer 都被清理，不泄漏。
+    // 注意：racePeerReserveWithTimeout 内部的 race timer 由它自己 finally 清理，
+    //       这里清理的是 controller 的 abort timer。
+    clearTimeout(abortTimer);
   }
 
-  // clearTimeout 防止 timer 泄漏（resolvePeerReserve 已返回，不再需要 abort）
-  clearTimeout(timer);
-
-  const resolvedPeer: ResolvedPeerPackage[] = result.packages;
-  const skipped = result.skipped;
-  const aborted = controller.signal.aborted;
-
-  // 3) 转换：ResolvedPeerPackage[] → PackageInfo[]（scope/name 拆分 + tarball 透传）
-  const peerPackages = mapResolvedToPackageInfos(resolvedPeer);
-
-  // 4) 不可变合并：existingSpecs 已保证 peer 包不与 lockfile 重复，直接拼接。
-  //    无论正常/超时，都用 result.packages（部分或全部）走现有合并逻辑。
-  const merged = mergePeerReservePackages(packages, peerPackages);
-
-  // 5) 汇总日志：超时与正常两种分支分别给用户清晰反馈
-  if (aborted) {
-    addTaskLog(
-      taskId,
-      "warn",
-      `peer 储备解析超时(${PEER_RESERVE_TIMEOUT_MS / 1000}s)，已解析 ${peerPackages.length} 个包，继续主流程`
-    );
-  } else {
-    const summarySuffix =
-      skipped.length > 0 ? `，${skipped.length} 个解析失败` : "";
-    addTaskLog(
-      taskId,
-      "info",
-      `peer 储备：新增 ${peerPackages.length} 个包${summarySuffix}`
-    );
+  // 4) 把纯函数产出的日志事件逐条落到任务日志（纯函数本身不耦合 addTaskLog）。
+  for (const evt of raced.logEvents) {
+    addTaskLog(taskId, evt.level, evt.message);
   }
 
-  // 失败条目逐条 warn（candidate + range + error），便于用户定位是哪个 peer 没补下。
-  // 超时场景下，被 abort 的进行中请求也会以 AbortError 形式出现在这里。
-  for (const item of skipped) {
-    addTaskLog(
-      taskId,
-      "warn",
-      `peer 储备解析失败：${item.candidate}@${item.range} - ${item.error}`
-    );
-  }
-
-  return merged;
+  return raced.packages;
 }
 
 @JsonController()

@@ -7,17 +7,24 @@
  *   ③ 转换（resolvedPeerToPackageInfo / mapResolvedToPackageInfos）：
  *      scope 包拆分、普通包、tarball 透传、异常 spec 抛错、immutability
  *   ④ 合并（mergePeerReservePackages）：拼接 + immutability（不 mutate 入参）
+ *   ⑤ racePeerReserveWithTimeout（强制超时）：
+ *      - 永不 resolve 的 resolvePeerReserve 也能在 timeoutMs 后强制返回 [...basePackages]
+ *      - 正常 resolve 走转换 + 合并
+ *      - service 抛错降级 [...basePackages]
+ *      - immutability（不 mutate 入参）
  */
 
-import { describe, expect, it } from "vitest";
-import type { PackageInfo } from "@npm-downloader/core";
+import { describe, expect, it, vi } from "vitest";
+import type { PackageInfo, PeerReserveCandidate } from "@npm-downloader/core";
 import type { ResolvedPeerPackage } from "../src/services/peerReserveService.js";
 import {
   buildExistingSpecs,
   mapResolvedToPackageInfos,
   mergePeerReservePackages,
   parseIncludePeerReserveFlag,
+  racePeerReserveWithTimeout,
   resolvedPeerToPackageInfo,
+  type ResolvePeerReserveFn,
 } from "../src/utils/peerReserveMerge.js";
 
 // ---------------------------------------------------------------------------
@@ -271,5 +278,188 @@ describe("mergePeerReservePackages", () => {
     ];
     const merged = mergePeerReservePackages(base, peer);
     expect(merged[0]?.tarball).toBe("https://private/x.tgz");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ⑤ racePeerReserveWithTimeout —— controller 层强制超时（Promise.race）
+// ---------------------------------------------------------------------------
+
+describe("racePeerReserveWithTimeout", () => {
+  /** 一个常驻的 basePackages + candidates + existingSpecs，供各用例复用 */
+  const basePackages: PackageInfo[] = [
+    { name: "react", version: "18.2.0" },
+  ];
+  const candidates: PeerReserveCandidate[] = [
+    { name: "@vitest/ui", ranges: ["^3.0.0"], installed: false },
+  ];
+  const existingSpecs = new Set<string>(["react@18.2.0"]);
+
+  it("核心用例：resolvePeerReserve 永不 resolve 时，timeoutMs 到点强制返回 [...basePackages] 且不挂起", async () => {
+    // 模拟实测场景：service 内 Promise.all 永不 resolve（pacote@21 不响应 AbortSignal）
+    // 返回一个永不 settle 的 Promise，验证 race 的 timeoutPromise 必然赢得 race。
+    const neverResolve: ResolvePeerReserveFn = vi.fn(
+      () => new Promise<never>(() => {})
+    );
+
+    // 用很小的超时（50ms）便于测试快速完成；真实默认 90000ms
+    const start = Date.now();
+    const result = await racePeerReserveWithTimeout({
+      resolvePeerReserve: neverResolve,
+      candidates,
+      basePackages,
+      existingSpecs,
+      timeoutMs: 50,
+    });
+    const elapsed = Date.now() - start;
+
+    // 断言 1：超时标志为 true
+    expect(result.timedOut).toBe(true);
+    // 断言 2：packages 退化为 [...basePackages]（放弃 peer 储备，主流程继续）
+    expect(result.packages).toEqual(basePackages);
+    expect(result.packages).not.toBe(basePackages); // 必须是新数组（immutability）
+    // 断言 3：产生了 warn 日志（含超时秒数）
+    const warnLogs = result.logEvents.filter((e) => e.level === "warn");
+    expect(warnLogs.length).toBeGreaterThanOrEqual(1);
+    expect(warnLogs[0]?.message).toMatch(/peer 储备解析超时/);
+    expect(warnLogs[0]?.message).toMatch(/0\.05s/); // 50ms = 0.05s
+    // 断言 4：确实等了大约 50ms（而非立即返回或永久挂起）
+    expect(elapsed).toBeGreaterThanOrEqual(40);
+    expect(elapsed).toBeLessThan(2000); // 防御：若永久挂起 vitest 30s timeout 会先触发
+  });
+
+  it("正常 resolve：走转换 + 不可变合并，日志含新增数量", async () => {
+    const resolved: ResolvedPeerPackage = {
+      name: "@vitest/ui",
+      version: "3.1.0",
+      tarball: "https://reg/@vitest/ui/-/ui-3.1.0.tgz",
+      via: "@vitest/ui",
+    };
+    const okResolve: ResolvePeerReserveFn = vi.fn(async () => ({
+      packages: [resolved],
+      skipped: [],
+    }));
+
+    const result = await racePeerReserveWithTimeout({
+      resolvePeerReserve: okResolve,
+      candidates,
+      basePackages,
+      existingSpecs,
+      timeoutMs: 1000, // 故意大，正常分支应远在此之前返回
+    });
+
+    expect(result.timedOut).toBe(false);
+    // base + 1 个 peer = 2 个
+    expect(result.packages).toHaveLength(2);
+    expect(result.packages[0]).toEqual(basePackages[0]);
+    // peer 包已正确拆分（@vitest/ui → scope=@vitest, name=ui）+ tarball 透传
+    expect(result.packages[1]).toMatchObject({
+      scope: "@vitest",
+      name: "ui",
+      version: "3.1.0",
+      tarball: resolved.tarball,
+    });
+    // info 日志含“新增 1 个包”
+    const infoLogs = result.logEvents.filter((e) => e.level === "info");
+    expect(infoLogs.some((e) => /新增 1 个包/.test(e.message))).toBe(true);
+  });
+
+  it("正常 resolve 但有 skipped：每个失败条目产生一条 warn", async () => {
+    const okResolve: ResolvePeerReserveFn = vi.fn(async () => ({
+      packages: [],
+      skipped: [
+        { candidate: "foo", range: "^1.0.0", error: "ETARGET" },
+        { candidate: "bar", range: "^2.0.0", error: "E404" },
+      ],
+    }));
+
+    const result = await racePeerReserveWithTimeout({
+      resolvePeerReserve: okResolve,
+      candidates,
+      basePackages,
+      existingSpecs,
+      timeoutMs: 1000,
+    });
+
+    expect(result.timedOut).toBe(false);
+    // 无新增 peer 包，仅原 base
+    expect(result.packages).toEqual(basePackages);
+    // 2 条失败 warn + 汇总 info 提到“2 个解析失败”
+    const failWarns = result.logEvents.filter(
+      (e) => e.level === "warn" && /peer 储备解析失败/.test(e.message)
+    );
+    expect(failWarns).toHaveLength(2);
+    const summary = result.logEvents.find((e) => /新增 0 个包/.test(e.message));
+    expect(summary?.message).toMatch(/2 个解析失败/);
+  });
+
+  it("service 抛错（理论不应发生）：降级 [...basePackages]，不中断", async () => {
+    const throwingResolve: ResolvePeerReserveFn = vi.fn(async () => {
+      throw new Error("unexpected boom");
+    });
+
+    const result = await racePeerReserveWithTimeout({
+      resolvePeerReserve: throwingResolve,
+      candidates,
+      basePackages,
+      existingSpecs,
+      timeoutMs: 1000,
+    });
+
+    expect(result.timedOut).toBe(false); // 抛错不算超时
+    expect(result.packages).toEqual(basePackages);
+    expect(result.packages).not.toBe(basePackages); // 新数组
+    const warn = result.logEvents.find((e) => /peer 储备解析异常/.test(e.message));
+    expect(warn?.message).toMatch(/unexpected boom/);
+  });
+
+  it("immutability：不 mutate 入参 basePackages / candidates / existingSpecs", async () => {
+    const baseSnapshot = [...basePackages];
+    const candSnapshot = candidates.map((c) => ({ ...c, ranges: [...c.ranges] }));
+    const specsSnapshot = new Set(existingSpecs);
+    const resolved: ResolvedPeerPackage = {
+      name: "@vitest/ui",
+      version: "3.1.0",
+      tarball: "https://reg/x.tgz",
+      via: "@vitest/ui",
+    };
+    const okResolve: ResolvePeerReserveFn = vi.fn(async () => ({
+      packages: [resolved],
+      skipped: [],
+    }));
+
+    await racePeerReserveWithTimeout({
+      resolvePeerReserve: okResolve,
+      candidates,
+      basePackages,
+      existingSpecs,
+      timeoutMs: 1000,
+    });
+
+    expect(basePackages).toEqual(baseSnapshot);
+    expect(candidates).toEqual(candSnapshot);
+    expect(existingSpecs).toEqual(specsSnapshot);
+  });
+
+  it("timer 清理：正常返回后不会因 race timer 泄漏而触发多余 resolve", async () => {
+    // 用 spy 监视 timeoutPromise 是否在 race 结束后仍被 resolve（不应有副作用，
+    // 但 clearTimeout 应确保 timer 不残留）。
+    const okResolve: ResolvePeerReserveFn = vi.fn(async () => ({
+      packages: [],
+      skipped: [],
+    }));
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+
+    await racePeerReserveWithTimeout({
+      resolvePeerReserve: okResolve,
+      candidates,
+      basePackages,
+      existingSpecs,
+      timeoutMs: 1000,
+    });
+
+    // 正常分支下，clearTimeout 至少被调用 1 次（清理 race timer）
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
   });
 });

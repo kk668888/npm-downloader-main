@@ -8,6 +8,7 @@
  *     2) existingSpecs 构造（lockfile 已有包的去重集合）
  *     3) ResolvedPeerPackage → PackageInfo 转换（scope/name 拆分 + tarball 透传）
  *     4) 合并（不可变，不 mutate 入参 packages）
+ *     5) racePeerReserveWithTimeout —— controller 层强制超时（Promise.race）
  *
  * 设计原则：
  *   - 全部为纯函数，无副作用，便于单测覆盖；
@@ -18,8 +19,16 @@
  * 将原本耦合在 controller 内的转换/合并逻辑抽离，提升可测性与可读性。
  */
 
-import { parsePackage, type PackageInfo } from "@npm-downloader/core";
-import type { ResolvedPeerPackage } from "../services/peerReserveService.js";
+import {
+  parsePackage,
+  type PackageInfo,
+  type PeerReserveCandidate,
+} from "@npm-downloader/core";
+import type {
+  ResolvePeerReserveOptions,
+  ResolvePeerReserveResult,
+  ResolvedPeerPackage,
+} from "../services/peerReserveService.js";
 
 /**
  * 宽松解析 includePeerReserve 开关。
@@ -143,4 +152,171 @@ export function mergePeerReservePackages(
 ): PackageInfo[] {
   // 展开运算符构造新数组 —— 不 mutate 任一入参
   return [...basePackages, ...peerPackages];
+}
+
+// ---------------------------------------------------------------------------
+// 5) controller 层强制超时（Promise.race，不依赖 pacote 是否响应 AbortSignal）
+// ---------------------------------------------------------------------------
+
+/**
+ * racePeerReserveWithTimeout 内部产生的日志事件。
+ *
+ * 设计：本纯函数不直接调用 addTaskLog（避免耦合 taskLogger / SSE / 文件 IO），
+ *      而是把要打的日志作为事件返回，由 controller 负责落到 addTaskLog。
+ *      这样该函数可以在不依赖任何全局服务的前提下被单测。
+ *
+ * level 与 TaskLog["level"] 对齐：info / warn / error。
+ */
+export interface PeerReserveLogEvent {
+  level: "info" | "warn" | "error";
+  message: string;
+}
+
+/**
+ * racePeerReserveWithTimeout 的返回结构。
+ *
+ * - packages：合并后的最终 packages（超时/异常时即 [...basePackages]，放弃 peer 储备）
+ * - logEvents：函数运行期间应输出的日志事件（controller 负责逐条 addTaskLog）
+ * - timedOut：是否触发了外层 Promise.race 超时（便于 controller 做差异化日志）
+ */
+export interface RacePeerReserveResult {
+  packages: PackageInfo[];
+  logEvents: PeerReserveLogEvent[];
+  timedOut: boolean;
+}
+
+/**
+ * 注入形式的 resolvePeerReserve 签名（与 service 导出的函数同构）。
+ *
+ * 用注入而非直接 import 的目的：
+ *   1) 可测性 —— 单测可注入“永不 resolve”的 mock，验证超时强制生效；
+ *   2) 解耦 —— 本函数不持有对 peerReserveService 的运行时依赖，便于在工具层独立演进。
+ */
+export type ResolvePeerReserveFn = (
+  candidates: PeerReserveCandidate[],
+  options: ResolvePeerReserveOptions
+) => Promise<ResolvePeerReserveResult>;
+
+/**
+ * controller 层 peer 储备解析的强制超时包装。
+ *
+ * 背景（为何不依赖 AbortController+signal）：
+ *   service 内部 `await Promise.all(rootTasks)` 与 `await Promise.all(childTasks)`
+ *   要求**所有** pacote.manifest 都 settle 才会让 resolvePeerReserve 返回。
+ *   实测 pacote@21 的 manifest 在收到 AbortSignal 时**不会**及时 reject/中止请求，
+ *   进行中的 manifest 持续挂起 → Promise.all 永不 resolve → resolvePeerReserve 永不返回
+ *   → 上层 await 永久挂起。即 controller 仅靠 controller.abort() 无法让流程继续。
+ *
+ * 本函数的解法：
+ *   在 controller 层用 `Promise.race([resolvePeerReserve(...), 本地 setTimeout timeoutPromise])`。
+ *   Node 事件循环保证 setTimeout 到点必然触发，timeoutPromise 必然 resolve，
+ *   **完全不依赖 pacote 是否响应 AbortSignal**。超时赢得 race 时，放弃 peer 储备、
+ *   返回 [...basePackages]，主流程继续走向 audit。
+ *
+ * 失败隔离：
+ *   - resolvePeerReserve 抛错（理论不应发生，service 已做失败隔离）→ 降级 [...basePackages]；
+ *   - 超时 → 降级 [...basePackages]；
+ *   - 正常 → mapResolvedToPackageInfos + mergePeerReservePackages 不可变合并。
+ *
+ * immutability：永不修改入参 basePackages，始终返回新数组。
+ *
+ * @param params              参数对象
+ * @param params.resolvePeerReserve 注入的 service 函数（或其 mock）
+ * @param params.candidates   Phase 1 产出的 peer 储备候选
+ * @param params.basePackages lockfile 解析出的原始 packages（只读）
+ * @param params.existingSpecs lockfile 已有包的去重集合
+ * @param params.timeoutMs    超时毫秒（controller 默认 90000，单测可注入 100）
+ * @param params.signal       AbortSignal（可选，尽力停止内部请求释放资源，**不依赖**）
+ * @returns 合并后 packages + 日志事件 + 是否超时
+ */
+export async function racePeerReserveWithTimeout(params: {
+  resolvePeerReserve: ResolvePeerReserveFn;
+  candidates: ReadonlyArray<PeerReserveCandidate>;
+  basePackages: ReadonlyArray<PackageInfo>;
+  existingSpecs: Set<string>;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  onProgress?: (msg: string) => void;
+}): Promise<RacePeerReserveResult> {
+  const {
+    resolvePeerReserve,
+    candidates,
+    basePackages,
+    existingSpecs,
+    timeoutMs,
+    signal,
+    onProgress,
+  } = params;
+
+  const logEvents: PeerReserveLogEvent[] = [];
+
+  // —— 本地 timeoutPromise（关键：Node 事件循环保证 setTimeout 必然触发）——
+  // 用一个显式的 timer id 句柄，正常/超时/异常路径都要 clearTimeout，防泄漏。
+  // 注意：这里**只**用 setTimeout 触发 resolve，不做任何外部 IO，
+  //       因此无论 pacote 是否响应 signal，到点 race 必然有结果。
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<{ timedOut: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+  });
+
+  // race 的判别联合类型：service 正常结果 | 超时标记
+  type RaceResult = ResolvePeerReserveResult | { timedOut: true };
+
+  let raceResult: RaceResult;
+  try {
+    raceResult = await Promise.race([
+      resolvePeerReserve([...candidates], {
+        existingSpecs,
+        concurrency: 8,
+        onProgress: onProgress ?? (() => {}),
+        signal,
+      }),
+      timeoutPromise,
+    ]);
+  } catch (error) {
+    // 防御性：service 内部已做失败隔离，正常不会抛；走到这里说明出现未预期异常。
+    // 降级为“跳过 peer 储备”，绝不让主流程中断。
+    clearTimeout(timer);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logEvents.push({
+      level: "warn",
+      message: `peer 储备解析异常，已跳过 peer 储备并继续主流程：${errMsg}`,
+    });
+    return { packages: [...basePackages], logEvents, timedOut: false };
+  }
+
+  // clearTimeout 防泄漏：无论 race 谁赢，timer 都不再需要。
+  // 必须放在 try/catch 之外、判定之前，确保所有正常分支都清理。
+  clearTimeout(timer);
+
+  // —— 判定：超时赢得 race → 放弃 peer 储备，主流程继续 ——
+  if ("timedOut" in raceResult && raceResult.timedOut) {
+    logEvents.push({
+      level: "warn",
+      message: `peer 储备解析超时(${timeoutMs / 1000}s)，已放弃 peer 储备，继续主流程`,
+    });
+    return { packages: [...basePackages], logEvents, timedOut: true };
+  }
+
+  // —— 正常分支：service 返回了 packages + skipped ——
+  const resolved = raceResult as ResolvePeerReserveResult;
+  const peerPackages = mapResolvedToPackageInfos(resolved.packages);
+  const merged = mergePeerReservePackages(basePackages, peerPackages);
+
+  const skippedSuffix =
+    resolved.skipped.length > 0 ? `，${resolved.skipped.length} 个解析失败` : "";
+  logEvents.push({
+    level: "info",
+    message: `peer 储备：新增 ${peerPackages.length} 个包${skippedSuffix}`,
+  });
+
+  // 失败条目逐条 warn（candidate + range + error），便于用户定位
+  for (const item of resolved.skipped) {
+    logEvents.push({
+      level: "warn",
+      message: `peer 储备解析失败：${item.candidate}@${item.range} - ${item.error}`,
+    });
+  }
+
+  return { packages: merged, logEvents, timedOut: false };
 }
