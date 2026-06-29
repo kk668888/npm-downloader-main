@@ -52,6 +52,15 @@ import { createZip, formatBytes } from "../utils/zip.js";
 const DOWNLOAD_CONCURRENCY = 10;
 const AUTO_RETRY_ATTEMPTS = 3;
 
+/**
+ * peer 储备联网递归解析的整体超时（毫秒）。
+ *
+ * 设计：peer 储备是可选增强，绝不能阻塞主下载流程。90s 是“用户可容忍的等待上限”
+ * 与“通常足够完成中小型 lockfile 的 peer 解析”之间的权衡。到点 abort，已解析的部分
+ * 仍然合并进主流程，未完成的记入 skipped（warn 日志），主流程继续走向 audit。
+ */
+const PEER_RESERVE_TIMEOUT_MS = 90_000;
+
 function getFullPackageName(pkg: Pick<PackageInfo, "scope" | "name">): string {
   return pkg.scope ? `${pkg.scope}/${pkg.name}` : pkg.name;
 }
@@ -93,41 +102,87 @@ async function resolveAndMergePeerReserve(
   // 1) 构造 existingSpecs（lockfile 全集），口径与 service 内 buildSpec 一致
   const existingSpecs = buildExistingSpecs(packages);
 
+  // 进入联网解析前，先把任务状态从 pending 推进到 processing，避免用户看到“假死”。
+  // peer 储备解析可能耗时较长（联网递归 pacote.manifest），必须给用户明确反馈。
+  setTaskStatus(
+    taskId,
+    "processing",
+    "正在联网解析 peer 储备(可能耗时较长)..."
+  );
+
   addTaskLog(
     taskId,
     "info",
-    `peer 储备：开始解析 ${candidates.length} 个候选（开关已开启）`
+    `peer 储备：开始解析 ${candidates.length} 个候选（开关已开启，超时 ${PEER_RESERVE_TIMEOUT_MS / 1000}s）`
   );
 
-  // 2) 调用 service 联网递归解析（pacote），concurrency=8，进度流式输出到任务日志
-  const result = await resolvePeerReserve(
-    [...candidates],
-    {
-      existingSpecs,
-      concurrency: 8,
-      onProgress: (msg) => addTaskLog(taskId, "info", msg),
-    }
+  // 2) AbortController + setTimeout 做整体超时；signal 透传给 pacote.manifest。
+  //    到点 abort：进行中的 manifest 以 AbortError reject → service 现有 .catch 记入 skipped，
+  //    resolvePeerReserve 仍正常返回（已 collected 的 packages + skipped），不抛出。
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    PEER_RESERVE_TIMEOUT_MS
   );
+
+  // 防御性：即便 service 意外抛错（理论上不会，signal abort 已被内部 catch），
+  // 也降级为“跳过 peer 储备”，返回 [...packages]，绝不中断 processAll。
+  let result;
+  try {
+    result = await resolvePeerReserve(
+      [...candidates],
+      {
+        existingSpecs,
+        concurrency: 8,
+        onProgress: (msg) => addTaskLog(taskId, "info", msg),
+        signal: controller.signal,
+      }
+    );
+  } catch (error) {
+    // service 内部已做失败隔离，正常不会走到这里；走到这里说明出现未预期异常。
+    clearTimeout(timer);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    addTaskLog(
+      taskId,
+      "warn",
+      `peer 储备解析异常，已跳过 peer 储备并继续主流程：${errMsg}`
+    );
+    return [...packages];
+  }
+
+  // clearTimeout 防止 timer 泄漏（resolvePeerReserve 已返回，不再需要 abort）
+  clearTimeout(timer);
 
   const resolvedPeer: ResolvedPeerPackage[] = result.packages;
   const skipped = result.skipped;
+  const aborted = controller.signal.aborted;
 
   // 3) 转换：ResolvedPeerPackage[] → PackageInfo[]（scope/name 拆分 + tarball 透传）
   const peerPackages = mapResolvedToPackageInfos(resolvedPeer);
 
-  // 4) 不可变合并：existingSpecs 已保证 peer 包不与 lockfile 重复，直接拼接
+  // 4) 不可变合并：existingSpecs 已保证 peer 包不与 lockfile 重复，直接拼接。
+  //    无论正常/超时，都用 result.packages（部分或全部）走现有合并逻辑。
   const merged = mergePeerReservePackages(packages, peerPackages);
 
-  // 5) 汇总日志（新增 N 个；失败 M 个时附加，并逐条 warn 便于排查）
-  const summarySuffix =
-    skipped.length > 0 ? `，${skipped.length} 个解析失败` : "";
-  addTaskLog(
-    taskId,
-    "info",
-    `peer 储备：新增 ${peerPackages.length} 个包${summarySuffix}`
-  );
+  // 5) 汇总日志：超时与正常两种分支分别给用户清晰反馈
+  if (aborted) {
+    addTaskLog(
+      taskId,
+      "warn",
+      `peer 储备解析超时(${PEER_RESERVE_TIMEOUT_MS / 1000}s)，已解析 ${peerPackages.length} 个包，继续主流程`
+    );
+  } else {
+    const summarySuffix =
+      skipped.length > 0 ? `，${skipped.length} 个解析失败` : "";
+    addTaskLog(
+      taskId,
+      "info",
+      `peer 储备：新增 ${peerPackages.length} 个包${summarySuffix}`
+    );
+  }
 
-  // 失败条目逐条 warn（candidate + range + error），便于用户定位是哪个 peer 没补下
+  // 失败条目逐条 warn（candidate + range + error），便于用户定位是哪个 peer 没补下。
+  // 超时场景下，被 abort 的进行中请求也会以 AbortError 形式出现在这里。
   for (const item of skipped) {
     addTaskLog(
       taskId,

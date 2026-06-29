@@ -86,6 +86,18 @@ export interface ResolvePeerReserveOptions {
   concurrency?: number;
   /** 进度回调（可选），用于日志流式输出关键节点 */
   onProgress?: (msg: string) => void;
+  /**
+   * AbortSignal（可选）—— 用于整体超时/取消。
+   *
+   * 透传给 pacote.manifest 的第二参 `{ signal }`：
+   *   - signal abort 时，进行中的 manifest 请求会以 AbortError reject；
+   *   - 该 reject 被 service 现有的失败隔离机制捕获，记入 skipped（candidate/range）；
+   *   - resolvePeerReserve 最终**正常返回**（已 collected 的 packages + skipped），**不抛出**。
+   *
+   * 设计目的：peer 储备是可选增强，绝不能阻塞主下载流程。
+   * 调用方（lockfileController）持有 AbortController，到点 abort 实现整体超时降级。
+   */
+  signal?: AbortSignal;
 }
 
 /** resolvePeerReserve 的返回结构 */
@@ -110,11 +122,18 @@ const buildSpec = (name: string, version: string): string => `${name}@${version}
  * 注意：range 可以是 `*`、`^1.2.3`、`>=18`、`1.x || 2.x` 等任意 semver 表达式，
  * pacote 内部会交给 npm 的 semver 引擎选择“range 内最新满足版”。
  *
- * @param spec 形如 `@vitest/ui@^3.0.0` 或 `lodash@4.17.21`
+ * @param spec   形如 `@vitest/ui@^3.0.0` 或 `lodash@4.17.21`
+ * @param signal AbortSignal（可选），透传给 pacote.manifest 第二参 `{ signal }`。
+ *               abort 时进行中的请求以 AbortError reject，由调用方 catch 记入 skipped。
  */
-async function fetchManifest(spec: string): Promise<ManifestLike> {
+async function fetchManifest(
+  spec: string,
+  signal?: AbortSignal
+): Promise<ManifestLike> {
+  // pacote.manifest 第二参为 opts，支持 { signal }。
+  // signal abort 时 pacote 会主动终止底层 HTTP 请求并以 AbortError reject。
   // pacote.manifest 返回值形状按 ManifestLike 断言（见接口注释说明原因）
-  const manifest = (await pacote.manifest(spec)) as ManifestLike;
+  const manifest = (await pacote.manifest(spec, { signal })) as ManifestLike;
   return manifest;
 }
 
@@ -139,6 +158,9 @@ export async function resolvePeerReserve(
   const concurrency = options.concurrency ?? 8;
   const limit = pLimit(concurrency);
   const onProgress = options.onProgress ?? (() => {});
+  // 整体 signal：透传给每次 pacote.manifest 调用。
+  // abort 时进行中的 manifest 以 AbortError reject，被现有 .catch 记入 skipped。
+  const signal = options.signal;
 
   // immutability：基于入参 existingSpecs 创建副本作为 visited，
   // 整个解析过程中只往副本里加，绝不修改调用方的 Set。
@@ -175,7 +197,7 @@ export async function resolvePeerReserve(
     const spec = `${name}@${range}`;
     onProgress(`peer reserve: resolving ${spec}`);
 
-    const manifest = await fetchManifest(spec);
+    const manifest = await fetchManifest(spec, signal);
     const resolvedVersion = manifest.version;
     const resolvedSpec = buildSpec(name, resolvedVersion);
 

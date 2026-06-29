@@ -372,4 +372,80 @@ describe("resolvePeerReserve", () => {
     expect(progressMsgs.some((m) => m.includes("resolving foo@*"))).toBe(true);
     expect(progressMsgs.some((m) => m.includes("解析完成"))).toBe(true);
   });
+
+  it("⑧ signal 透传：pacote.manifest 第二参包含传入的 signal", async () => {
+    // 验证 options.signal 被原样透传给 pacote.manifest(spec, { signal }) 的第二参。
+    manifestMock.mockImplementation(async () => makeManifest("foo", "1.0.0"));
+
+    const ac = new AbortController();
+    const candidates: PeerReserveCandidate[] = [
+      makeCandidate({ name: "foo", ranges: ["*"] }),
+    ];
+
+    await resolvePeerReserve(candidates, {
+      existingSpecs: new Set<string>(),
+      signal: ac.signal,
+    });
+
+    // manifest 被调用过，且每次调用的第二参都包含 { signal: ac.signal }
+    expect(manifestMock).toHaveBeenCalled();
+    for (const call of manifestMock.mock.calls) {
+      const opts = call[1];
+      expect(opts).toBeDefined();
+      expect((opts as { signal: AbortSignal }).signal).toBe(ac.signal);
+    }
+  });
+
+  it("⑨ signal abort 后进行中请求被记 skipped，resolvePeerReserve 仍正常返回（不 reject）", async () => {
+    // 场景：根 peer foo@* 已成功解析并收集（在 abort 之前完成）；
+    //      其传递依赖 bar@^1.0.0 的 manifest 是一个“永不 resolve”的 pending promise，
+    //      模拟联网卡死。abort 后该 pending 应以 AbortError reject，被记入 skipped，
+    //      resolvePeerReserve 正常返回（已 collected 的 foo + skipped 的 bar）。
+    const ac = new AbortController();
+    // bar 的 manifest：返回一个由 signal 控制的 pending —— 模拟 pacote 在 abort 时 reject
+    const barPending = new Promise((_resolve, reject) => {
+      ac.signal.addEventListener("abort", () => {
+        const e = new Error("The user aborted a request");
+        e.name = "AbortError";
+        reject(e);
+      });
+    });
+
+    manifestMock.mockImplementation(async (spec: string) => {
+      if (spec === "foo@*") {
+        // foo 先成功（在 abort 之前完成）
+        return makeManifest("foo", "1.0.0", { dependencies: { bar: "^1.0.0" } });
+      }
+      if (spec === "bar@^1.0.0") {
+        // bar 卡住，直到 abort 才 reject
+        return barPending as Promise<unknown>;
+      }
+      throw new Error(`unexpected spec: ${spec}`);
+    });
+
+    const candidates: PeerReserveCandidate[] = [
+      makeCandidate({ name: "foo", ranges: ["*"] }),
+    ];
+
+    // 触发 abort（同步即可，bar 已挂起等待 abort 事件）
+    // 用 queueMicrotask 确保 foo 先被解析、bar 已入队后再 abort
+    queueMicrotask(() => ac.abort());
+
+    // 关键断言：即便发生 abort，resolvePeerReserve 也不 reject
+    const result = await resolvePeerReserve(candidates, {
+      existingSpecs: new Set<string>(),
+      signal: ac.signal,
+    });
+
+    // foo 在 abort 前已收集
+    expect(result.packages).toHaveLength(1);
+    expect(result.packages[0]?.name).toBe("foo");
+
+    // bar 因 abort 失败，被记入 skipped（candidate=父包 foo）
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]).toMatchObject({
+      candidate: "foo",
+      range: "^1.0.0",
+    });
+  });
 });
