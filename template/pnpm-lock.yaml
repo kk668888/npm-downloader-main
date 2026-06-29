@@ -10,23 +10,7 @@ importers:
     dependencies:
       '@ant-design/icons-vue':
         specifier: ^7.0.0
-        version: 7.0.1(vue@3.5.32(typescript@5.9.3))
-      ant-design-vue:
-        specifier: ^3.2.0
-        version: 3.2.20(vue@3.5.32(typescript@5.9.3))
-      axios:
-        specifier: ^1.7.0
-        version: 1.15.0
-      echarts:
-        specifier: ^5.5.0
-        version: 5.6.0
-      jsencrypt:
-        specifier: ^3.5.4
-        version: 3.5.4
-      pinia:
-        specifier: ^2.2.0
-        version: 2.3.1(typescript@5.9.3)(vue@3.5.32(typescript@5.9.3))
-      vue:
+        
         specifier: ^3.5.0
         version: 3.5.32(typescript@5.9.3)
       vue-router:

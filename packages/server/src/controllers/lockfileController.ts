@@ -32,10 +32,18 @@ import {
   decideFinalStatus,
   findMissingPackages,
   mergeMissingFailures,
+  retryFailedPackages,
 } from "../utils/downloadFinalize.js";
 import { ValidationError } from "../utils/errors.js";
 import { retryWithBackoff } from "../utils/retry.js";
 import { createZip, formatBytes } from "../utils/zip.js";
+
+const DOWNLOAD_CONCURRENCY = 10;
+const AUTO_RETRY_ATTEMPTS = 3;
+
+function getFullPackageName(pkg: Pick<PackageInfo, "scope" | "name">): string {
+  return pkg.scope ? `${pkg.scope}/${pkg.name}` : pkg.name;
+}
 
 @JsonController()
 export class LockfileController {
@@ -147,8 +155,8 @@ async function processAll(
 
     const auditReport = await auditPackages(
       taskId,
-      packages.map((pkg: PackageInfo) => ({
-        name: pkg.scope ? `${pkg.scope}/${pkg.name}` : pkg.name,
+      packages.map((pkg) => ({
+        name: getFullPackageName(pkg),
         version: pkg.version,
       })),
       blockCritical
@@ -212,14 +220,18 @@ async function processAll(
     const taskDir = path.join(TEMP_DIR, dirName);
     fs.mkdirSync(taskDir, { recursive: true });
 
+    const packageBySpec = new Map<string, PackageInfo>(
+      packages.map((pkg) => [`${getFullPackageName(pkg)}@${pkg.version}`, pkg])
+    );
+
     const totalPackages = packages.length;
-    const limit = pLimit(10);
+    const limit = pLimit(DOWNLOAD_CONCURRENCY);
     let successCount = 0;
     let failCount = 0;
     let completedCount = 0;
     const failedPackages: FailedPackage[] = [];
 
-    const downloadPromises = packages.map((pkg: PackageInfo) =>
+    const downloadPromises = packages.map((pkg) =>
       limit(async () => {
         if (isTaskCancelled(taskId)) {
           return;
@@ -229,11 +241,12 @@ async function processAll(
           ...pkg,
           url: parsePackageTgzUrl(pkg),
         };
-        const fullName = pkg.scope ? `${pkg.scope}/${pkg.name}` : pkg.name;
+        const fullName = getFullPackageName(pkg);
         const pkgSpec = `${fullName}@${pkg.version}`;
 
         try {
           await retryWithBackoff(() => downloadTgzFile(urlInfo, taskDir), {
+            maxAttempts: AUTO_RETRY_ATTEMPTS,
             onRetry: (attempt, error) => {
               const err = error instanceof Error ? error.message : "Unknown error";
               addTaskLog(taskId, "warn", `Retry ${attempt} for ${pkgSpec}: ${err}`);
@@ -274,6 +287,49 @@ async function processAll(
 
       addTaskLog(taskId, "info", "任务已被用户取消");
       return;
+    }
+
+    if (failedPackages.length > 0) {
+      addTaskLog(
+        taskId,
+        "warn",
+        `Initial pass finished with ${failedPackages.length} failed packages, retrying them once more`
+      );
+      setTaskStatus(taskId, "processing", "Retrying failed packages...");
+
+      const retryResult = await retryFailedPackages(failedPackages, async (failedPackage) => {
+        const pkgSpec = `${failedPackage.name}@${failedPackage.version}`;
+        const pkg = packageBySpec.get(pkgSpec);
+        if (!pkg) {
+          throw new Error("Package metadata not found for retry");
+        }
+
+        const urlInfo: PackageUrlInfo = {
+          ...pkg,
+          url: parsePackageTgzUrl(pkg),
+        };
+
+        addTaskLog(taskId, "info", `Retry pass download for ${pkgSpec}`);
+
+        await retryWithBackoff(() => downloadTgzFile(urlInfo, taskDir), {
+          maxAttempts: AUTO_RETRY_ATTEMPTS,
+          onRetry: (attempt, error) => {
+            const err = error instanceof Error ? error.message : "Unknown error";
+            addTaskLog(taskId, "warn", `Retry pass ${attempt} for ${pkgSpec}: ${err}`);
+          },
+        });
+      });
+
+      successCount += retryResult.recovered.length;
+      failCount = retryResult.remaining.length;
+      failedPackages.length = 0;
+      failedPackages.push(...retryResult.remaining);
+
+      addTaskLog(
+        taskId,
+        "info",
+        `Retry pass complete: ${retryResult.recovered.length} recovered, ${retryResult.remaining.length} still failed`
+      );
     }
 
     const missing = findMissingPackages(taskDir, packages);

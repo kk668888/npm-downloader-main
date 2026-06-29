@@ -7,6 +7,7 @@ import {
   decideFinalStatus,
   findMissingPackages,
   mergeMissingFailures,
+  retryFailedPackages,
 } from "../src/utils/downloadFinalize.js";
 
 /**
@@ -42,6 +43,43 @@ describe("buildTgzFileName", () => {
     expect(
       buildTgzFileName({ scope: "@babel", name: "core", version: "7.0.0" })
     ).toBe("babel-core-7.0.0.tgz");
+  });
+});
+
+describe("retryFailedPackages", () => {
+  it("没有失败包时不触发重下", async () => {
+    const retryOne = async () => {
+      throw new Error("should not be called");
+    };
+
+    const result = await retryFailedPackages([], retryOne);
+
+    expect(result.recovered).toEqual([]);
+    expect(result.remaining).toEqual([]);
+  });
+
+  it("失败包二次重下成功后应从最终失败列表移除", async () => {
+    const retryOne = async (pkg: { name: string; version: string }) => {
+      if (pkg.name === "flaky") {
+        return;
+      }
+      throw new Error("still failing");
+    };
+
+    const result = await retryFailedPackages(
+      [
+        { name: "flaky", version: "1.0.0", error: "timeout" },
+        { name: "broken", version: "2.0.0", error: "500" },
+      ],
+      retryOne
+    );
+
+    expect(result.recovered).toEqual([
+      { name: "flaky", version: "1.0.0", error: "timeout" },
+    ]);
+    expect(result.remaining).toEqual([
+      { name: "broken", version: "2.0.0", error: "still failing" },
+    ]);
   });
 });
 
