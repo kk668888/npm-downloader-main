@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "jest",
+    "test": "vitest run",
     "clean": "rm -rf dist"
   },
   "keywords": [],
@@ -31,6 +31,7 @@
     "nock": "^14.0.10",
     "ts-jest": "^29.4.1",
     "tsx": "^4.20.5",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.16"
   }
 }

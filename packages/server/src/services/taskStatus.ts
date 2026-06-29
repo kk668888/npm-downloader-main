@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { upsertHistoryItem } from "./history.js";
-import type { TaskStatus, ProgressInfo, AuditReport } from "@npm-downloader/types";
+import type { TaskStatus, ProgressInfo, AuditReport, FailedPackage } from "@npm-downloader/types";
 
 // Re-export type for backward compatibility
 export type { TaskStatus, ProgressInfo };
@@ -14,6 +14,8 @@ export interface TaskStatusItem {
   token: string;
   /** 用户自定义的文件夹名称（用于 ZIP 下载时的文件名） */
   folderName?: string;
+  /** 下载失败的包列表（partial / failed 时可能有值），供前端轮询读取 */
+  failedPackages?: FailedPackage[];
 }
 
 const taskStatus = new Map<string, TaskStatusItem>();
@@ -23,6 +25,15 @@ const taskStatus = new Map<string, TaskStatusItem>();
  *
  * 首次创建时自动生成 token（crypto.randomUUID），
  * 后续更新保留已有 token。
+ *
+ * @param taskId 任务 ID
+ * @param status 任务状态
+ * @param message 状态描述
+ * @param progress 进度信息
+ * @param auditReport 安全审计报告（首次设置后保留）
+ * @param folderName 用户自定义文件夹名（首次设置后保留）
+ * @param failedPackages 下载失败包清单（仅在终态 completed/partial/failed 时传入；
+ *        传入 undefined 则保留已有值，传入空数组表示清空）
  */
 export const setTaskStatus = (
   taskId: string,
@@ -30,7 +41,8 @@ export const setTaskStatus = (
   message?: string,
   progress?: ProgressInfo,
   auditReport?: AuditReport,
-  folderName?: string
+  folderName?: string,
+  failedPackages?: FailedPackage[]
 ): void => {
   const existing = taskStatus.get(taskId);
   const item: TaskStatusItem = {
@@ -42,12 +54,17 @@ export const setTaskStatus = (
     token: existing?.token ?? crypto.randomUUID(),
     // folderName：显式传入 > 已有值 > undefined
     folderName: folderName ?? existing?.folderName,
+    // failedPackages：显式传入（含空数组）覆盖；否则保留已有
+    failedPackages: failedPackages ?? existing?.failedPackages,
   };
   taskStatus.set(taskId, item);
   // 同步审计报告到 history（持久化）
   const historyPatch: Parameters<typeof upsertHistoryItem>[1] = { status, message, progress };
   if (item.auditReport) {
     historyPatch.auditReport = item.auditReport;
+  }
+  if (item.failedPackages) {
+    historyPatch.failedPackages = item.failedPackages;
   }
   upsertHistoryItem(taskId, historyPatch);
 };

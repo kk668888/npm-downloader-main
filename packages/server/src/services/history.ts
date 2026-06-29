@@ -81,6 +81,8 @@ export const upsertHistoryItem = (
       packageName: patch.packageName,
       packagesCount: patch.packagesCount,
       folderName: patch.folderName,
+      // 下载失败清单（partial / failed 时可能有值），供前端历史接口读取
+      failedPackages: patch.failedPackages,
     };
     history.unshift(item);
     if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;

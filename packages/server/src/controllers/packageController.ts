@@ -4,6 +4,7 @@ import type { Response } from "express";
 import { JsonController, Post, Body, Res } from "routing-controllers";
 import pLimit from "p-limit";
 import pacote from "pacote";
+import type { FailedPackage, TaskStatus } from "@npm-downloader/types";
 import { upsertHistoryItem } from "../services/history.js";
 import { TEMP_DIR } from "../middleware/dirs.js";
 import { setTaskStatus, waitForAuditConfirmation, clearAuditConfirmation, getTaskStatus, createTaskAbortController, isTaskCancelled, removeTaskAbortController } from "../services/taskStatus.js";
@@ -12,6 +13,11 @@ import { addTaskLog } from "../services/taskLogger.js";
 import { retryWithBackoff } from "../utils/retry.js";
 import { createZip, formatBytes } from "../utils/zip.js";
 import { ValidationError } from "../utils/errors.js";
+import {
+  decideFinalStatus,
+  findMissingPackages,
+  mergeMissingFailures,
+} from "../utils/downloadFinalize.js";
 import crypto from "crypto";
 
 @JsonController()
@@ -176,10 +182,15 @@ export class PackageController {
           let failCount = 0;
           let completedCount = 0;
           const totalPackages = allPackages.size;
+          // 收集下载失败的包（含 scope 全名），用于终态判定与历史记录暴露
+          const failedPackages: FailedPackage[] = [];
+          // 同时维护清单（合并形态 name + version），供后续缺失校验
+          const packageList: Array<{ name: string; version: string }> = [];
 
           const downloadPromises = Array.from(allPackages.entries()).map(
             ([key, resolvedVersion]) => {
               const pkgName = key.substring(0, key.lastIndexOf("@"));
+              packageList.push({ name: pkgName, version: resolvedVersion });
               return limit(async () => {
                 // 每个包下载前检查任务是否已被取消
                 if (isTaskCancelled(taskId)) {
@@ -193,15 +204,15 @@ export class PackageController {
                       .replace("/", "-")}-${resolvedVersion}.tgz`
                   : `${pkgName}-${resolvedVersion}.tgz`;
 
-                // Retry logic with exponential backoff
+                // maxAttempts 默认 5；不可重试错误（如 404）立即抛出
                 try {
                   await retryWithBackoff(
                     () =>
                       pacote.tarball.file(spec, path.join(taskDir, fileName)),
                     {
-                      maxAttempts: 3,
                       onRetry: (attempt, error) => {
-                        addTaskLog(taskId, "warn", `Retry ${attempt}/2 for ${spec}`);
+                        const err = error instanceof Error ? error.message : "Unknown error";
+                        addTaskLog(taskId, "warn", `Retry ${attempt} for ${spec}: ${err}`);
                       },
                     }
                   );
@@ -218,6 +229,8 @@ export class PackageController {
                   failCount++;
                   completedCount++;
                   const errMsg = error instanceof Error ? error.message : "Unknown error";
+                  // 收集失败包（不可变 push 到局部数组；pkgName 入参未被 mutate）
+                  failedPackages.push({ name: pkgName, version: resolvedVersion, error: errMsg });
                   addTaskLog(taskId, "error", `✗ Failed ${spec}: ${errMsg}`);
                   setTaskStatus(
                     taskId,
@@ -225,7 +238,6 @@ export class PackageController {
                     `Downloading packages... (${completedCount}/${totalPackages})`,
                     { current: completedCount, total: totalPackages }
                   );
-                  console.error(`Failed to download ${spec}`, error);
                 }
               });
             }
@@ -248,20 +260,52 @@ export class PackageController {
             return;
           }
 
+          // ===== 关键校验：对照清单检查实际落盘的 .tgz，抓"未抛错但静默丢失" =====
+          const missing = findMissingPackages(taskDir, packageList);
+          const allFailedPackages = mergeMissingFailures(failedPackages, missing);
+          if (missing.length > 0) {
+            addTaskLog(
+              taskId,
+              "warn",
+              `检测到 ${missing.length} 个包文件缺失（已从清单中标记为失败）`
+            );
+            failCount += missing.length;
+          }
+
+          // ===== 终态判定：completed / partial / failed =====
+          const finalStatus: TaskStatus = decideFinalStatus(
+            successCount,
+            totalPackages,
+            allFailedPackages
+          );
+
           addTaskLog(
             taskId,
             "info",
-            `Download complete: ${successCount} succeeded, ${failCount} failed`
+            `Download complete: ${successCount} succeeded, ${failCount} failed (final status: ${finalStatus})`
           );
 
           setTaskStatus(taskId, "processing", "Compressing files...");
 
           const zipPath = path.join(TEMP_DIR, `${dirName}.zip`);
+          // partial 时 ZIP 照常生成（只含成功的包），zipUrl 仍可用
           const zipBytes = await createZip(taskDir, zipPath);
 
           addTaskLog(taskId, "info", `ZIP created: ${formatBytes(zipBytes)} MB`);
-          console.log(`Task ${taskId} completed.`);
-          setTaskStatus(taskId, "completed", "Download complete");
+
+          // 终态信息 + 失败清单同步到任务状态与历史记录（供前端读取）
+          const finalMessage =
+            finalStatus === "completed"
+              ? "Download complete"
+              : finalStatus === "partial"
+              ? `部分包下载失败（${allFailedPackages.length} 个），ZIP 仅包含成功的包`
+              : "All packages failed to download";
+          setTaskStatus(taskId, finalStatus, finalMessage, undefined, undefined, undefined, allFailedPackages);
+          upsertHistoryItem(taskId, {
+            status: finalStatus,
+            message: finalMessage,
+            failedPackages: allFailedPackages.length > 0 ? allFailedPackages : undefined,
+          });
         } catch (e) {
           console.error("Download package failed", e);
           setTaskStatus(taskId, "failed", "Download failed");

@@ -5,8 +5,23 @@ export type TaskType = "lockfile" | "package";
 
 /**
  * 任务状态
+ *
+ * - pending    : 已创建，待处理
+ * - auditing   : 安全审计中（或等待用户确认）
+ * - processing : 下载 / 打包中
+ * - completed  : 全部包下载成功
+ * - partial    : 部分包下载成功（其余失败），ZIP 仍可用
+ * - failed     : 全部包下载失败 / 任务失败
+ * - cancelled  : 用户取消
  */
-export type TaskStatus = "pending" | "auditing" | "processing" | "completed" | "failed" | "cancelled";
+export type TaskStatus =
+  | "pending"
+  | "auditing"
+  | "processing"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "cancelled";
 
 /**
  * 进度信息
@@ -14,6 +29,21 @@ export type TaskStatus = "pending" | "auditing" | "processing" | "completed" | "
 export interface ProgressInfo {
   current: number;
   total: number;
+}
+
+/**
+ * 下载失败的单个包信息
+ *
+ * 用于在任务结果 / 历史记录中向前端暴露"哪些包下载失败"，
+ * 以便前端提示用户"ZIP 内容可能不完整"。
+ */
+export interface FailedPackage {
+  /** 包全名（含 scope，例如 "@types/node"），普通包就是 name */
+  name: string;
+  /** 包版本 */
+  version: string;
+  /** 失败原因（人类可读，例如 "HTTP 404"、"download timeout"、"missing after download"） */
+  error: string;
 }
 
 /**
@@ -35,6 +65,8 @@ export interface HistoryItem {
   progress?: ProgressInfo;
   /** 安全审计报告（任务审计完成后持久化） */
   auditReport?: AuditReport;
+  /** 下载失败的包列表（status 为 partial / failed 时可能有值），用于前端展示失败清单 */
+  failedPackages?: FailedPackage[];
 }
 
 /**
@@ -59,6 +91,8 @@ export interface TaskStatusInfo {
   token?: string;
   /** 用户自定义的文件夹名称 */
   folderName?: string;
+  /** 下载失败的包列表（status 为 partial / failed 时可能有值），供前端轮询任务状态时读取 */
+  failedPackages?: FailedPackage[];
 }
 
 // ========================================
@@ -101,6 +135,8 @@ export interface PackageAuditResult {
   packageName: string;
   /** 版本 */
   version: string;
+  /** Version normalized for semver range matching. Missing means the input was not valid semver. */
+  comparedVersion?: string;
   /** 发现的漏洞列表 */
   vulnerabilities: Vulnerability[];
   /** 是否已弃用 */

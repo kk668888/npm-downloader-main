@@ -6,6 +6,7 @@ config()
 import { createExpressServer } from 'routing-controllers'
 import path from 'path'
 import fs from 'fs'
+import { fileURLToPath } from 'url'
 import type { Request, Response } from 'express'
 import { ensureWorkingDirs, TEMP_DIR } from './middleware/dirs.js'
 import { getDataDir } from './config/dirs.js'
@@ -41,6 +42,8 @@ if (!fs.existsSync(DATA_DIR)) {
 loadHistory()
 
 const PORT = process.env.PORT || 3002
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 // 先创建基础 Express app
 import express from 'express'
@@ -284,4 +287,3 @@ expressApp.listen(PORT, () => {
 })
 
 export default expressApp
-

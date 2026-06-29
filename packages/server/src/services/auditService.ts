@@ -117,6 +117,7 @@ async function runAudit(
   // 构建每个包的审计结果
   const results: PackageAuditResult[] = packages.map((pkg) => {
     const pkgAdvisories = advisories[pkg.name] || [];
+    const comparedVersion = getComparableVersion(pkg.version);
     const vulnerabilities: Vulnerability[] = pkgAdvisories
       .filter((a: any) =>
         isVersionAffected(pkg.version, a.vulnerable_versions || "*")
@@ -133,6 +134,7 @@ async function runAudit(
     return {
       packageName: pkg.name,
       version: pkg.version,
+      comparedVersion,
       vulnerabilities,
       deprecated: false,
     };
@@ -283,10 +285,15 @@ function isVersionAffected(version: string, range: string): boolean {
   if (!range || range === "*") return true;
 
   try {
-    const coerced = semver.coerce(version);
-    if (!coerced) return true;
-    return semver.satisfies(coerced, range, { includePrerelease: true });
+    const comparableVersion = getComparableVersion(version);
+    if (!comparableVersion) return false;
+    return semver.satisfies(comparableVersion, range, { includePrerelease: true });
   } catch {
-    return true;
+    return false;
   }
+}
+
+function getComparableVersion(version: string): string | undefined {
+  const trimmed = version.trim();
+  return semver.valid(trimmed) || semver.clean(trimmed) || undefined;
 }

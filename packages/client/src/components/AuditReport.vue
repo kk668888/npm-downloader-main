@@ -148,6 +148,12 @@
                 <div class="flex items-center gap-2.5 mb-3">
                   <span class="text-sm font-mono font-medium text-base-200">{{ item.packageName }}</span>
                   <span class="text-[10px] font-mono text-base-500 bg-base-800/50 px-1.5 py-0.5 rounded">v{{ item.version }}</span>
+                  <span
+                    v-if="item.comparedVersion && item.comparedVersion !== item.version"
+                    class="text-[10px] font-mono text-warning bg-warning/10 px-1.5 py-0.5 rounded"
+                  >
+                    比对 v{{ item.comparedVersion }}
+                  </span>
                   <span v-if="item.deprecated" class="text-[10px] text-orange-400 bg-orange-400/10 px-1.5 py-0.5 rounded">已弃用</span>
                 </div>
 

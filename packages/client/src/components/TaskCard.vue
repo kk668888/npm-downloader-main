@@ -9,6 +9,8 @@
           :color="
             item.status === 'completed'
               ? 'green'
+              : item.status === 'partial'
+              ? 'yellow'
               : item.status === 'failed'
               ? 'red'
               : item.status === 'auditing'
@@ -54,6 +56,35 @@
       </div>
     </div>
 
+    <!-- 下载失败清单：partial / failed 且后端返回了失败包时展示 -->
+    <div
+      v-if="item.failedPackages && item.failedPackages.length > 0"
+      class="mb-2 rounded-md bg-warning/10 border border-warning/20 overflow-hidden"
+    >
+      <button
+        type="button"
+        class="flex items-center justify-between w-full px-2 py-1 text-[10px] text-warning hover:bg-warning/10 transition-colors"
+        @click="failedExpanded = !failedExpanded"
+      >
+        <span>⚠ {{ item.failedPackages.length }} 个包下载失败</span>
+        <span class="text-base-500">{{ failedExpanded ? '收起' : '查看清单' }}</span>
+      </button>
+      <div
+        v-if="failedExpanded"
+        class="px-2 pb-1.5 pt-1 space-y-0.5 max-h-32 overflow-y-auto scrollbar-thin border-t border-warning/10"
+      >
+        <div
+          v-for="(fp, idx) in item.failedPackages"
+          :key="`${fp.name}@${fp.version}-${idx}`"
+          class="text-[10px] font-mono truncate"
+          :title="`${fp.name}@${fp.version} — ${fp.error}`"
+        >
+          <span class="text-base-300">{{ fp.name }}@{{ fp.version }}</span>
+          <span class="text-base-600"> — {{ fp.error }}</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Actions -->
     <div class="flex gap-1.5">
       <Button
@@ -61,7 +92,7 @@
         color="green"
         variant="soft"
         :to="item.zipUrl ? `${serverBaseUrl}${item.zipUrl}` : undefined"
-        :disabled="item.status !== 'completed' || !item.zipUrl"
+        :disabled="(item.status !== 'completed' && item.status !== 'partial') || !item.zipUrl"
         class="flex-1"
       >
         下载
@@ -137,6 +168,8 @@ const emit = defineEmits<{
 
 const deleting = ref(false);
 const openingFolder = ref(false);
+/** 失败包清单是否展开（默认收起，避免占用过多空间） */
+const failedExpanded = ref(false);
 const popconfirmRef = ref<InstanceType<typeof Popconfirm> | null>(null);
 
 /** 审计按钮颜色：根据审计状态区分 */
@@ -155,7 +188,9 @@ const statusLabel = computed(() => {
     case "auditing": return "审计中";
     case "processing": return "下载中";
     case "completed": return "已完成";
+    case "partial": return "部分成功";
     case "failed": return "失败";
+    case "cancelled": return "已取消";
     default: return props.item.status;
   }
 });

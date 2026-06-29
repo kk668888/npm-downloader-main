@@ -221,6 +221,7 @@ export function useTaskManager(serverBaseUrl: string) {
 
           if (
             statusData.status === "completed" ||
+            statusData.status === "partial" ||
             statusData.status === "failed" ||
             statusData.status === "cancelled"
           ) {
@@ -306,7 +307,7 @@ export function useTaskManager(serverBaseUrl: string) {
             return;
           }
 
-          if (statusData.status === "completed") {
+          if (statusData.status === "completed" || statusData.status === "partial") {
             downloadingPackage.value = false;
             activePollFn = null;
             isAwaitingAudit.value = false;

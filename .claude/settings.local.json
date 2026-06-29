@@ -17,7 +17,17 @@
       "Read(//c/tmp/**)",
       "Bash(cat err_out.txt)",
       "Bash(cat resp_out.txt)",
-      "Bash(npx vitest *)"
+      "Bash(npx vitest *)",
+      "Bash(awk 'NR>117' template/pnpm-lock.yaml)",
+      "Bash(node analyze-lockfile.mjs)",
+      "Bash(node probe-urls.mjs)",
+      "Bash(node --input-type=module -e 'const u=\"https://registry.npmjs.org/thenify/-/thenify-3.3.1.tgz\";const t=async\\(i\\)=>{try{const r=await fetch\\(u,{signal:AbortSignal.timeout\\(15000\\)}\\);if\\(r.body\\)await r.body.cancel\\(\\);console.log\\(\"try\"+i,\"-> HTTP\",r.status\\);}catch\\(e\\){console.log\\(\"try\"+i,\"-> ERR\",e.message\\);}};for\\(let i=1;i<=6;i++\\){await t\\(i\\);await new Promise\\(r=>setTimeout\\(r,400\\)\\);}')",
+      "Bash(pnpm run *)",
+      "Bash(pnpm list *)",
+      "Bash(pnpm install *)",
+      "Bash(npx tsc *)",
+      "mcp__ide__getDiagnostics",
+      "Bash(pnpm exec *)"
     ]
   }
 }
