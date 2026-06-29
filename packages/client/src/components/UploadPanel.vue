@@ -54,6 +54,22 @@
       />
     </div>
 
+    <!-- Peer 储备开关：默认关闭。开启后产物体积会显著增大 -->
+    <div class="space-y-1">
+      <div class="flex items-center justify-between">
+        <Toggle
+          :model-value="includePeerReserve"
+          :disabled="busy"
+          label="包含未安装的 peer 储备（联网补全，体积会显著增大）"
+          @update:model-value="$emit('update:includePeerReserve', $event)"
+        />
+      </div>
+      <!-- 帮助说明：提示该选项的影响范围 -->
+      <p class="text-[10px] text-base-500 leading-relaxed">
+        会联网解析 peerDependencies 声明的可选 peer 及其完整依赖树，产物体积可能数倍增长。
+      </p>
+    </div>
+
     <!-- Upload Button -->
     <Button
       block
@@ -85,6 +101,8 @@ const props = defineProps<{
   folderName: string;
   /** 超危停止开关（双向绑定） */
   blockCritical: boolean;
+  /** Peer 储备开关（双向绑定，默认关闭） */
+  includePeerReserve: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -95,6 +113,8 @@ const emit = defineEmits<{
   (e: "update:folderName", value: string): void;
   /** 超危停止开关变更时向上传递 */
   (e: "update:blockCritical", value: boolean): void;
+  /** Peer 储备开关变更时向上传递 */
+  (e: "update:includePeerReserve", value: boolean): void;
 }>();
 
 const isDragging = ref(false);

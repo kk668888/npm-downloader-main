@@ -10,6 +10,7 @@ import {
   resolvePackageUrl,
   type PackageInfo,
   type PackageUrlInfo,
+  type PeerReserveCandidate,
 } from "@npm-downloader/core";
 import type { FailedPackage, SkippedDep, TaskStatus } from "@npm-downloader/types";
 import crypto from "crypto";
@@ -27,6 +28,10 @@ import {
   waitForAuditConfirmation,
 } from "../services/taskStatus.js";
 import { addTaskLog } from "../services/taskLogger.js";
+import {
+  resolvePeerReserve,
+  type ResolvedPeerPackage,
+} from "../services/peerReserveService.js";
 import { cleanupAll } from "../utils/cleanup.js";
 import {
   decideFinalStatus,
@@ -35,6 +40,12 @@ import {
   retryFailedPackages,
 } from "../utils/downloadFinalize.js";
 import { ValidationError } from "../utils/errors.js";
+import {
+  buildExistingSpecs,
+  mapResolvedToPackageInfos,
+  mergePeerReservePackages,
+  parseIncludePeerReserveFlag,
+} from "../utils/peerReserveMerge.js";
 import { retryWithBackoff } from "../utils/retry.js";
 import { createZip, formatBytes } from "../utils/zip.js";
 
@@ -43,6 +54,89 @@ const AUTO_RETRY_ATTEMPTS = 3;
 
 function getFullPackageName(pkg: Pick<PackageInfo, "scope" | "name">): string {
   return pkg.scope ? `${pkg.scope}/${pkg.name}` : pkg.name;
+}
+
+/**
+ * Phase 3：解析 peer 储备候选并合并进 packages。
+ *
+ * 这是 processAll 的一个内部步骤（在 audit 之前执行）：
+ *   1) 开关关闭 或 无候选 → 直接返回原 packages（行为与历史完全一致，不联网）；
+ *   2) 开关打开 且 有候选 →
+ *      a. 基于 packages 构造 existingSpecs（lockfile 全集，去重口径与 service 一致）；
+ *      b. 调用 resolvePeerReserve 联网递归解析（pacote），concurrency=8，
+ *         onProgress 流式输出到任务日志；
+ *      c. 把 ResolvedPeerPackage[] 转换成 PackageInfo[]（scope/name 拆分 + tarball）；
+ *      d. 与原 packages 不可变合并；
+ *      e. 输出汇总日志（新增 N 个、失败 M 个），失败条目逐条 warn。
+ *
+ * immutability：永不修改入参 packages / candidates，始终返回新数组。
+ * 失败隔离：service 内部已对单包失败做隔离（记入 skipped），
+ *           本函数只在日志层暴露失败，绝不抛出中断主流程。
+ *
+ * @param taskId            任务 ID（日志用）
+ * @param packages          lockfile 解析出的原始 packages（只读）
+ * @param includePeerReserve peer 储备开关
+ * @param candidates        Phase 1 产出的 peer 储备候选
+ * @returns 合并后的 packages 数组（开关关闭时即原 packages 引用）
+ */
+async function resolveAndMergePeerReserve(
+  taskId: string,
+  packages: ReadonlyArray<PackageInfo>,
+  includePeerReserve: boolean,
+  candidates: ReadonlyArray<PeerReserveCandidate>
+): Promise<PackageInfo[]> {
+  // 开关关闭 或 无候选：直接返回原 packages，行为与历史完全一致（关键：不破坏现有流程）
+  if (!includePeerReserve || candidates.length === 0) {
+    return [...packages];
+  }
+
+  // 1) 构造 existingSpecs（lockfile 全集），口径与 service 内 buildSpec 一致
+  const existingSpecs = buildExistingSpecs(packages);
+
+  addTaskLog(
+    taskId,
+    "info",
+    `peer 储备：开始解析 ${candidates.length} 个候选（开关已开启）`
+  );
+
+  // 2) 调用 service 联网递归解析（pacote），concurrency=8，进度流式输出到任务日志
+  const result = await resolvePeerReserve(
+    [...candidates],
+    {
+      existingSpecs,
+      concurrency: 8,
+      onProgress: (msg) => addTaskLog(taskId, "info", msg),
+    }
+  );
+
+  const resolvedPeer: ResolvedPeerPackage[] = result.packages;
+  const skipped = result.skipped;
+
+  // 3) 转换：ResolvedPeerPackage[] → PackageInfo[]（scope/name 拆分 + tarball 透传）
+  const peerPackages = mapResolvedToPackageInfos(resolvedPeer);
+
+  // 4) 不可变合并：existingSpecs 已保证 peer 包不与 lockfile 重复，直接拼接
+  const merged = mergePeerReservePackages(packages, peerPackages);
+
+  // 5) 汇总日志（新增 N 个；失败 M 个时附加，并逐条 warn 便于排查）
+  const summarySuffix =
+    skipped.length > 0 ? `，${skipped.length} 个解析失败` : "";
+  addTaskLog(
+    taskId,
+    "info",
+    `peer 储备：新增 ${peerPackages.length} 个包${summarySuffix}`
+  );
+
+  // 失败条目逐条 warn（candidate + range + error），便于用户定位是哪个 peer 没补下
+  for (const item of skipped) {
+    addTaskLog(
+      taskId,
+      "warn",
+      `peer 储备解析失败：${item.candidate}@${item.range} - ${item.error}`
+    );
+  }
+
+  return merged;
 }
 
 @JsonController()
@@ -96,6 +190,11 @@ export class LockfileController {
       const folderName = (req.body?.folderName as string) || undefined;
       const blockCritical =
         req.body?.blockCritical !== "false" && req.body?.blockCritical !== "0";
+      // Phase 3：Peer 储备开关。默认 false（不传 / 传非真值时行为与历史完全一致）。
+      // 字段名固定为 includePeerReserve，Phase 4 前端将沿用。
+      const includePeerReserve = parseIncludePeerReserveFlag(
+        req.body?.includePeerReserve
+      );
 
       setTaskStatus(taskId, "pending", "准备中...", undefined, undefined, folderName);
 
@@ -110,12 +209,17 @@ export class LockfileController {
 
       const taskStatusItem = getTaskStatus(taskId);
 
+      // 把 includePeerReserve 与 candidates 一并传入 processAll：
+      // peer 储备解析涉及联网（pacote），必须放在异步段（audit 之前），
+      // 不能放在请求同步段，否则会阻塞 HTTP 响应。
       processAll(
         taskId,
         packages,
         skipped,
         folderName,
-        blockCritical
+        blockCritical,
+        includePeerReserve,
+        parseResult.peerReserveCandidates
       ).catch((error) => {
         console.error("Lockfile processing failed:", error);
       });
@@ -148,12 +252,23 @@ async function processAll(
   packages: PackageInfo[],
   skippedDeps: SkippedDep[],
   folderName?: string,
-  blockCritical?: boolean
+  blockCritical?: boolean,
+  includePeerReserve: boolean = false,
+  peerReserveCandidates: PeerReserveCandidate[] = []
 ): Promise<void> {
   createTaskAbortController(taskId);
 
   try {
-    const resolvedPackages = packages;
+    // —— Phase 3：Peer 储备解析（在 audit 之前）——
+    // 仅当开关打开且存在候选时才联网解析；否则 packages 保持原样，
+    // 行为与未集成 peer 储备时完全一致（关键：不破坏现有流程）。
+    // 解析失败（service 内部已失败隔离）不影响主流程，仅记录 warn 日志。
+    const resolvedPackages = await resolveAndMergePeerReserve(
+      taskId,
+      packages,
+      includePeerReserve,
+      peerReserveCandidates
+    );
 
     setTaskStatus(taskId, "auditing", "正在审计包安全...");
     upsertHistoryItem(taskId, {

@@ -24,6 +24,11 @@ export function useTaskManager(serverBaseUrl: string) {
   // 超危停止开关：true=发现严重漏洞直接阻止下载，false=降级为需用户确认
   const blockCritical = ref(true);
 
+  // Peer 储备开关：默认关闭。
+  // 开启后服务端会联网解析 peerDependencies 声明但未安装的可选 peer 及其完整依赖树，
+  // 一并打包进 ZIP（用于离线镜像）。会让产物体积显著增大，故默认不勾选，需用户显式开启。
+  const includePeerReserve = ref(false);
+
   // 审计相关状态
   const auditReport = ref<AuditReport | null>(null);
   const showingAuditReport = ref(false);
@@ -185,6 +190,9 @@ export function useTaskManager(serverBaseUrl: string) {
     }
     // 超危停止开关
     formData.append("blockCritical", String(blockCritical.value));
+    // Peer 储备开关：与 blockCritical 传法一致，始终携带布尔字符串。
+    // 后端默认按 false 处理，未勾选时传 false 即可（行为与历史完全一致）。
+    formData.append("includePeerReserve", String(includePeerReserve.value));
 
     try {
       const response = await fetch(`${serverBaseUrl}/api/upload`, {
@@ -390,6 +398,7 @@ export function useTaskManager(serverBaseUrl: string) {
     packageProgress,
     folderName,
     blockCritical,
+    includePeerReserve,
     auditReport,
     showingAuditReport,
     isAwaitingAudit,

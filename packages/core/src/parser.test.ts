@@ -154,6 +154,102 @@ describe("parseLockFile", () => {
     expect(mains).toHaveLength(1);
     expect(mains[0]?.tarball).toBe(mainTarball);
   });
+
+  // —— Phase 1：Peer 储备候选收集（纯本地，不联网）——
+  it("应从 packages 段收集 peerDependencies 声明，并正确标注 optional / installed / declaredBy", async () => {
+    // 场景：
+    // - @scope/host@1.0.0 声明了两个 peer：
+    //     @types/node (range '>=18'，并在 peerDependenciesMeta 标记 optional)
+    //     sass        (range '*'，未标记 optional)
+    // - packages 段同时存在 @types/node@18.19.130（任意版本存在即视为 installed=true）
+    // - sass 在 packages 段不存在 -> installed=false
+    vi.mocked(readWantedLockfile).mockResolvedValue({
+      packages: {
+        "@scope/host@1.0.0": {
+          peerDependencies: {
+            "@types/node": ">=18",
+            sass: "*",
+          },
+          peerDependenciesMeta: {
+            "@types/node": { optional: true },
+          },
+        },
+        "@types/node@18.19.130": {},
+      },
+      snapshots: {
+        "@scope/host@1.0.0": {},
+      },
+    } as never);
+
+    const result = await parseLockFile(tempDir);
+
+    // 必填字段存在且为数组（无 peer 声明时也应为空数组，这里非空）
+    expect(Array.isArray(result?.peerReserveCandidates)).toBe(true);
+    const candidates = result?.peerReserveCandidates ?? [];
+
+    // @types/node：已安装（packages 段有任意版本）+ optional + range + 声明方
+    const typesNode = candidates.find((c) => c.name === "@types/node");
+    expect(typesNode).toBeDefined();
+    expect(typesNode?.ranges).toContain(">=18");
+    expect(typesNode?.optional).toBe(true);
+    expect(typesNode?.installed).toBe(true);
+    // declaredBy 含声明方的完整 spec（含 scope）
+    expect(typesNode?.declaredBy).toContain("@scope/host@1.0.0");
+
+    // sass：未安装 + 非 optional + range '*' + 声明方
+    const sass = candidates.find((c) => c.name === "sass");
+    expect(sass).toBeDefined();
+    expect(sass?.ranges).toContain("*");
+    expect(sass?.optional).toBe(false);
+    expect(sass?.installed).toBe(false);
+    expect(sass?.declaredBy).toContain("@scope/host@1.0.0");
+  });
+
+  it("无 peerDependencies 声明时，peerReserveCandidates 应为空数组（保持向后兼容）", async () => {
+    vi.mocked(readWantedLockfile).mockResolvedValue({
+      packages: {
+        "lodash@4.17.21": {},
+      },
+    } as never);
+
+    const result = await parseLockFile(tempDir);
+
+    expect(result?.packages).toMatchObject([{ name: "lodash", version: "4.17.21" }]);
+    expect(result?.peerReserveCandidates).toEqual([]);
+  });
+
+  it("同一 peer 被多个包声明时，ranges/declaredBy 应去重合并，optional 任一为真即真", async () => {
+    // - host-a 与 host-b 都声明 react 作为 peer，range 不同；
+    // - 仅 host-b 把 react 标记为 optional -> 最终 optional=true（或运算）。
+    vi.mocked(readWantedLockfile).mockResolvedValue({
+      packages: {
+        "host-a@1.0.0": {
+          peerDependencies: { react: ">=17" },
+        },
+        "host-b@2.0.0": {
+          peerDependencies: { react: "*" },
+          peerDependenciesMeta: { react: { optional: true } },
+        },
+      },
+    } as never);
+
+    const result = await parseLockFile(tempDir);
+    const react = result?.peerReserveCandidates.find((c) => c.name === "react");
+
+    expect(react).toBeDefined();
+    // 两个 range 都保留（A2 策略=全收集，去重）
+    expect(react?.ranges).toEqual(expect.arrayContaining([">=17", "*"]));
+    expect(react?.ranges).toHaveLength(2);
+    // 两个声明方都在
+    expect(react?.declaredBy).toEqual(
+      expect.arrayContaining(["host-a@1.0.0", "host-b@2.0.0"])
+    );
+    expect(react?.declaredBy).toHaveLength(2);
+    // optional：host-b 标记 optional -> 合并为 true
+    expect(react?.optional).toBe(true);
+    // react 未在 packages 段 -> installed=false
+    expect(react?.installed).toBe(false);
+  });
 });
 
 describe("resolvePackageUrl", () => {

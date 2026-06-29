@@ -24,11 +24,13 @@
           :download-url="downloadUrl"
           :folder-name="folderName"
           :block-critical="blockCritical"
+          :include-peer-reserve="includePeerReserve"
           @select-file="file = $event"
           @upload="handleUpload"
           @view-logs="openLogViewer"
           @update:folder-name="folderName = $event"
           @update:block-critical="blockCritical = $event"
+          @update:include-peer-reserve="includePeerReserve = $event"
         />
       </Card>
 
@@ -152,6 +154,7 @@ const {
   packageProgress,
   folderName,
   blockCritical,
+  includePeerReserve,
   downloadUrl,
   packageDownloadUrl,
   uploadFile,
