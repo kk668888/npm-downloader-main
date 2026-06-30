@@ -201,8 +201,8 @@ export type ResolvePeerReserveFn = (
  * controller 层 peer 储备解析的强制超时包装。
  *
  * 背景（为何不依赖 AbortController+signal）：
- *   service 内部 `await Promise.all(rootTasks)` 与 `await Promise.all(childTasks)`
- *   要求**所有** pacote.manifest 都 settle 才会让 resolvePeerReserve 返回。
+ *   service 内部 `await Promise.all(rootTasks)` 要求**所有** pacote.manifest 都 settle
+ *   才能让 resolvePeerReserve 返回（非递归改造后已无 childTasks，但 rootTasks 仍存在）。
  *   实测 pacote@21 的 manifest 在收到 AbortSignal 时**不会**及时 reject/中止请求，
  *   进行中的 manifest 持续挂起 → Promise.all 永不 resolve → resolvePeerReserve 永不返回
  *   → 上层 await 永久挂起。即 controller 仅靠 controller.abort() 无法让流程继续。
@@ -212,6 +212,11 @@ export type ResolvePeerReserveFn = (
  *   Node 事件循环保证 setTimeout 到点必然触发，timeoutPromise 必然 resolve，
  *   **完全不依赖 pacote 是否响应 AbortSignal**。超时赢得 race 时，放弃 peer 储备、
  *   返回 [...basePackages]，主流程继续走向 audit。
+ *
+ * 备注（非递归改造后）：
+ *   peer 储备 service 已改为非递归（只解析每个根 peer 自身，不展开 dependencies），
+ *   十几个 peer 通常几秒内完成，该超时**几乎不会触发**。此处 Promise.race 仅作为兜底保留，
+ *   以防极端网络环境（如 manifest 请求长期挂起）拖垮主流程，逻辑不变。
  *
  * 失败隔离：
  *   - resolvePeerReserve 抛错（理论不应发生，service 已做失败隔离）→ 降级 [...basePackages]；

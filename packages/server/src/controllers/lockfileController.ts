@@ -50,11 +50,14 @@ const DOWNLOAD_CONCURRENCY = 10;
 const AUTO_RETRY_ATTEMPTS = 3;
 
 /**
- * peer 储备联网递归解析的整体超时（毫秒）。
+ * peer 储备联网解析的整体超时（毫秒）。
  *
  * 设计：peer 储备是可选增强，绝不能阻塞主下载流程。90s 是“用户可容忍的等待上限”
- * 与“通常足够完成中小型 lockfile 的 peer 解析”之间的权衡。到点 abort，已解析的部分
+ * 与“通常足够完成 peer 解析”之间的权衡。到点 abort，已解析的部分
  * 仍然合并进主流程，未完成的记入 skipped（warn 日志），主流程继续走向 audit。
+ *
+ * 说明：peer 储备已改为 **非递归**（只解析每个根 peer 自身的 manifest，不展开 dependencies），
+ *      十几个 peer 通常几秒内即可完成，该超时几乎不会触发；保留 Promise.race 仅作兜底。
  */
 const PEER_RESERVE_TIMEOUT_MS = 90_000;
 
@@ -109,7 +112,8 @@ async function resolveAndMergePeerReserve(
   const existingSpecs = buildExistingSpecs(packages);
 
   // 进入联网解析前，先把任务状态从 pending 推进到 processing，避免用户看到“假死”。
-  // peer 储备解析可能耗时较长（联网递归 pacote.manifest），必须给用户明确反馈。
+  // peer 储备解析为非递归（每个根 peer 只请求一次 manifest），通常很快完成；
+  // 仍给用户明确反馈，避免多 peer 候选时短暂等待被误判为“假死”。
   setTaskStatus(
     taskId,
     "processing",

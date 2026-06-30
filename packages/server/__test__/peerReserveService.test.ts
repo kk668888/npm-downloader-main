@@ -1,11 +1,11 @@
 /**
- * peerReserveService 单元测试 —— Phase 2
+ * peerReserveService 单元测试 —— Phase 2（非递归版）
  *
  * 全部 mock pacote.manifest，**不真联网**。
  *
  * 覆盖用例：
  *   ① installed 候选被跳过
- *   ② 未装候选递归收集根 peer + 传递依赖
+ *   ② 未装候选只收集根 peer 自身（非递归，dependencies 不被收集、不被请求）
  *   ③ existingSpecs 去重（lockfile 已有的 name@version 不重复收集）
  *   ④ 同包多 range 各解析（range 内最新版）
  *   ⑤ 单个 manifest reject 被记录到 skipped 且不中断整体
@@ -100,15 +100,20 @@ describe("resolvePeerReserve", () => {
     expect(result.skipped).toEqual([]);
   });
 
-  it("② 未装候选递归收集根 peer + 传递依赖（含 tarball 透传）", async () => {
-    // 场景：根 peer `foo@*` 解析到 1.2.3，foo 依赖 `bar@^1.0.0`，
-    //      bar 解析到 1.0.5，bar 又依赖 `baz@1.x`，baz 解析到 1.0.0（叶子）。
+  it("② 未装候选只收集根 peer 自身（非递归：dependencies 不被收集、也不被请求）", async () => {
+    // 场景：根 peer `foo@*` 解析到 1.2.3，foo 的 manifest **带** dependencies
+    //      （bar@^1.0.0 → baz@1.x 等，模拟 msw/sass 这种依赖树庞大的 peer）。
+    //      期望（非递归）：
+    //        - 只收集 foo 自身 1 个包（不收集 bar/baz）；
+    //        - pacote.manifest 只被根 peer 调用 1 次，**不会因 dependencies 再次被调用**；
+    //        - via 永远等于根 peer 的 candidate.name（foo）。
     manifestMock.mockImplementation(async (spec: string) => {
       if (spec === "foo@*") {
         return makeManifest("foo", "1.2.3", {
           dependencies: { bar: "^1.0.0" },
         });
       }
+      // 即便 manifest 声明了 bar/baz 这些 spec，非递归模式下都不应到达这里
       if (spec === "bar@^1.0.0") {
         return makeManifest("bar", "1.0.5", {
           tarball: "https://example.test/bar-1.0.5.tgz",
@@ -129,47 +134,70 @@ describe("resolvePeerReserve", () => {
 
     const result = await resolvePeerReserve(candidates, defaultOptions());
 
-    // 收集到 3 个包：foo（根 peer）+ bar + baz（传递依赖）
-    expect(result.packages).toHaveLength(3);
+    // 只收集 foo 自身 1 个包（非递归，不展开 dependencies）
+    expect(result.packages).toHaveLength(1);
 
-    const byName = new Map(result.packages.map((p) => [p.name, p]));
-
-    // 根 peer：via 是 candidate.name 自身
-    const foo = byName.get("foo");
+    const foo = result.packages[0];
     expect(foo).toBeDefined();
+    expect(foo?.name).toBe("foo");
     expect(foo?.version).toBe("1.2.3");
-    expect(foo?.via).toBe("foo");
+    expect(foo?.via).toBe("foo"); // 非递归：via 永远是根 peer 的 candidate.name
     expect(foo?.tarball).toContain("foo-1.2.3.tgz");
-
-    // 一级传递依赖 bar：via 是父包 foo
-    const bar = byName.get("bar");
-    expect(bar).toBeDefined();
-    expect(bar?.version).toBe("1.0.5");
-    expect(bar?.via).toBe("foo");
-    // tarball 严格透传自 manifest.dist.tarball
-    expect(bar?.tarball).toBe("https://example.test/bar-1.0.5.tgz");
-
-    // 二级传递依赖 baz：via 是父包 bar
-    const baz = byName.get("baz");
-    expect(baz).toBeDefined();
-    expect(baz?.version).toBe("1.0.0");
-    expect(baz?.via).toBe("bar");
-    expect(baz?.tarball).toBe("https://example.test/baz-1.0.0.tgz");
 
     // 无失败
     expect(result.skipped).toEqual([]);
+
+    // —— 关键断言（直接证明非递归）：pacote.manifest 只被根 peer 调用 ——
+    const calledSpecs = manifestMock.mock.calls.map((c) => c[0]);
+    expect(calledSpecs).toEqual(["foo@*"]); // 只调用了根 peer，未调用 bar/baz
+    expect(calledSpecs).not.toContain("bar@^1.0.0");
+    expect(calledSpecs).not.toContain("baz@1.x");
+    // manifest 只被调用 1 次（核心反递归证据）
+    expect(manifestMock).toHaveBeenCalledTimes(1);
   });
 
-  it("③ existingSpecs 去重：lockfile 已有的 name@version 不重复收集、不再递归", async () => {
-    // 场景：foo@* 解析到 1.2.3，其依赖 bar@^1.0.0 → 1.0.5。
-    //      但 foo@1.2.3 已在 existingSpecs（模拟 lockfile 已有）。
-    //      期望：foo 被跳过（不收集、不递归 bar），最终 packages 为空。
+  it("②' 多个未装根 peer 各自只收集自身（非递归：相互 dependencies 完全不展开）", async () => {
+    // 场景：两个未装根 peer foo@* / qux@*，它们的 manifest 都带 dependencies。
+    //      期望：只收集 foo、qux 自身；dependencies 中声明的 bar/baz 一个都不收、一个都不请求。
+    manifestMock.mockImplementation(async (spec: string) => {
+      if (spec === "foo@*") {
+        return makeManifest("foo", "1.2.3", {
+          dependencies: { bar: "^1.0.0" },
+        });
+      }
+      if (spec === "qux@*") {
+        return makeManifest("qux", "9.9.9", {
+          dependencies: { baz: "1.x" },
+        });
+      }
+      throw new Error(`unexpected spec: ${spec}`);
+    });
+
+    const candidates: PeerReserveCandidate[] = [
+      makeCandidate({ name: "foo", ranges: ["*"] }),
+      makeCandidate({ name: "qux", ranges: ["*"] }),
+    ];
+
+    const result = await resolvePeerReserve(candidates, defaultOptions());
+
+    // 只收集 foo、qux 自身（共 2 个），不收集 bar/baz
+    expect(result.packages).toHaveLength(2);
+    const byName = new Map(result.packages.map((p) => [p.name, p]));
+    expect(byName.get("foo")?.via).toBe("foo");
+    expect(byName.get("qux")?.via).toBe("qux");
+
+    // 只调用了 foo@* 与 qux@*，没有因 dependencies 再去请求 bar/baz
+    const calledSpecs = manifestMock.mock.calls.map((c) => c[0]).sort();
+    expect(calledSpecs).toEqual(["foo@*", "qux@*"]);
+    expect(manifestMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("③ existingSpecs 去重：lockfile 已有的 name@version 不重复收集", async () => {
+    // 场景：foo@* 解析到 1.2.3。但 foo@1.2.3 已在 existingSpecs（模拟 lockfile 已有）。
+    //      期望：foo 被跳过（不收集），最终 packages 为空。
     manifestMock.mockImplementation(async (spec: string) => {
       if (spec === "foo@*") {
         return makeManifest("foo", "1.2.3", { dependencies: { bar: "^1.0.0" } });
-      }
-      if (spec === "bar@^1.0.0") {
-        return makeManifest("bar", "1.0.5");
       }
       throw new Error(`unexpected spec: ${spec}`);
     });
@@ -183,13 +211,11 @@ describe("resolvePeerReserve", () => {
       defaultOptions(["foo@1.2.3"]) // 模拟 lockfile 已有 foo@1.2.3
     );
 
-    // foo 命中 visited → 跳过 + 不递归 bar
+    // foo 命中 visited → 跳过（不收集）
     expect(result.packages).toEqual([]);
-    // foo@* 仍会调用一次 manifest（要先解析才知道 version），
-    // 但 bar@^1.0.0 不应被调用（foo 命中 visited 后短路）
+    // foo@* 仍会调用一次 manifest（要先解析才知道 version）
     const calledSpecs = manifestMock.mock.calls.map((c) => c[0]);
     expect(calledSpecs).toContain("foo@*");
-    expect(calledSpecs).not.toContain("bar@^1.0.0");
     expect(result.skipped).toEqual([]);
   });
 
@@ -283,36 +309,35 @@ describe("resolvePeerReserve", () => {
     });
   });
 
-  it("⑤' 传递依赖 manifest reject 被记录到 skipped（candidate=父包名）且不中断兄弟", async () => {
-    // 场景：root@* → 1.0.0，依赖 bad@^1.0.0（reject）和 good@^1.0.0（正常）。
-    //      期望：root 与 good 被收集，bad 失败被记录到 skipped（candidate=root）。
+  it("⑤' 根 peer 多 range 时单个 range 失败被记 skipped 且不中断其他 range", async () => {
+    // 场景（非递归）：foo 有两个 range ['^1.0.0', '^2.0.0']，
+    //      ^1.0.0 解析失败（ETIMEDOUT），^2.0.0 解析成功 → 2.0.0。
+    //      期望：foo@2.0.0 被收集，^1.0.0 的失败被记录到 skipped（candidate=foo）。
     manifestMock.mockImplementation(async (spec: string) => {
-      if (spec === "root@*") {
-        return makeManifest("root", "1.0.0", {
-          dependencies: { bad: "^1.0.0", good: "^1.0.0" },
-        });
-      }
-      if (spec === "good@^1.0.0") {
-        return makeManifest("good", "1.0.0");
-      }
-      if (spec === "bad@^1.0.0") {
+      if (spec === "foo@^1.0.0") {
         throw new Error("ETIMEDOUT");
+      }
+      if (spec === "foo@^2.0.0") {
+        return makeManifest("foo", "2.0.0");
       }
       throw new Error(`unexpected spec: ${spec}`);
     });
 
     const candidates: PeerReserveCandidate[] = [
-      makeCandidate({ name: "root", ranges: ["*"] }),
+      makeCandidate({ name: "foo", ranges: ["^1.0.0", "^2.0.0"] }),
     ];
 
     const result = await resolvePeerReserve(candidates, defaultOptions());
 
-    const names = result.packages.map((p) => p.name).sort();
-    expect(names).toEqual(["good", "root"]);
+    // foo@2.0.0 被收集
+    expect(result.packages).toHaveLength(1);
+    expect(result.packages[0]?.name).toBe("foo");
+    expect(result.packages[0]?.version).toBe("2.0.0");
 
+    // foo@^1.0.0 的失败被记录到 skipped（candidate=foo）
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]).toMatchObject({
-      candidate: "root", // 传递依赖失败时 candidate = 父包名
+      candidate: "foo",
       range: "^1.0.0",
       error: "ETIMEDOUT",
     });
@@ -322,9 +347,6 @@ describe("resolvePeerReserve", () => {
     manifestMock.mockImplementation(async (spec: string) => {
       if (spec === "foo@*") {
         return makeManifest("foo", "1.0.0", { dependencies: { bar: "^1.0.0" } });
-      }
-      if (spec === "bar@^1.0.0") {
-        return makeManifest("bar", "1.0.0");
       }
       throw new Error(`unexpected spec: ${spec}`);
     });
@@ -396,14 +418,14 @@ describe("resolvePeerReserve", () => {
     }
   });
 
-  it("⑨ signal abort 后进行中请求被记 skipped，resolvePeerReserve 仍正常返回（不 reject）", async () => {
-    // 场景：根 peer foo@* 已成功解析并收集（在 abort 之前完成）；
-    //      其传递依赖 bar@^1.0.0 的 manifest 是一个“永不 resolve”的 pending promise，
+  it("⑨ signal abort 后进行中的根 peer 请求被记 skipped，resolvePeerReserve 仍正常返回（不 reject）", async () => {
+    // 场景（非递归版）：根 peer foo@* 的 manifest 是一个“永不 resolve”的 pending promise，
     //      模拟联网卡死。abort 后该 pending 应以 AbortError reject，被记入 skipped，
-    //      resolvePeerReserve 正常返回（已 collected 的 foo + skipped 的 bar）。
+    //      resolvePeerReserve 正常返回（packages 空 + skipped 的 foo）。
+    //      （原递归版用 foo+bar 验证，非递归后无 bar，改用根 peer pending 直接验证。）
     const ac = new AbortController();
-    // bar 的 manifest：返回一个由 signal 控制的 pending —— 模拟 pacote 在 abort 时 reject
-    const barPending = new Promise((_resolve, reject) => {
+    // foo 的 manifest：返回一个由 signal 控制的 pending —— 模拟 pacote 在 abort 时 reject
+    const fooPending = new Promise((_resolve, reject) => {
       ac.signal.addEventListener("abort", () => {
         const e = new Error("The user aborted a request");
         e.name = "AbortError";
@@ -413,12 +435,8 @@ describe("resolvePeerReserve", () => {
 
     manifestMock.mockImplementation(async (spec: string) => {
       if (spec === "foo@*") {
-        // foo 先成功（在 abort 之前完成）
-        return makeManifest("foo", "1.0.0", { dependencies: { bar: "^1.0.0" } });
-      }
-      if (spec === "bar@^1.0.0") {
-        // bar 卡住，直到 abort 才 reject
-        return barPending as Promise<unknown>;
+        // foo 卡住，直到 abort 才 reject
+        return fooPending as Promise<unknown>;
       }
       throw new Error(`unexpected spec: ${spec}`);
     });
@@ -427,8 +445,7 @@ describe("resolvePeerReserve", () => {
       makeCandidate({ name: "foo", ranges: ["*"] }),
     ];
 
-    // 触发 abort（同步即可，bar 已挂起等待 abort 事件）
-    // 用 queueMicrotask 确保 foo 先被解析、bar 已入队后再 abort
+    // 触发 abort（同步即可，foo 已挂起等待 abort 事件）
     queueMicrotask(() => ac.abort());
 
     // 关键断言：即便发生 abort，resolvePeerReserve 也不 reject
@@ -437,15 +454,12 @@ describe("resolvePeerReserve", () => {
       signal: ac.signal,
     });
 
-    // foo 在 abort 前已收集
-    expect(result.packages).toHaveLength(1);
-    expect(result.packages[0]?.name).toBe("foo");
-
-    // bar 因 abort 失败，被记入 skipped（candidate=父包 foo）
+    // foo 因 abort 失败，被记入 skipped（candidate=foo）
+    expect(result.packages).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]).toMatchObject({
       candidate: "foo",
-      range: "^1.0.0",
+      range: "*",
     });
   });
 });
